@@ -1,0 +1,6 @@
+.DS_Store
+feker-rgb
+Feker Codex Bridge.app/Contents/MacOS/
+Feker Codex Bridge.app/Contents/_CodeSignature/
+*.log
+*.tmp
