@@ -41,13 +41,13 @@ Codex 在 macOS 上原生使用 `Command + 1` … `Command + 9` 打开侧栏中�
 
 ## 菜单栏 UI
 
-安装后，macOS 菜单栏会出现键盘图标 `⌨︎`。菜单提供：
+安装后，macOS 菜单栏会出现“键帽 + 状态灯”图标。它是原生 Template Image，会自动适配浅色、深色和菜单选中状态。菜单采用类似 Caffeine 的简单交互：
 
-- 数字键任务模式
-- 全键盘状态灯模式
-- 蓝、绿、橙、红、白和熄灭测试
-- 打开运行日志
-- 打开“输入监控”设置
+- 第一项直接开启或暂停任务灯；暂停时恢复键盘原有灯效
+- 当前键盘一行说明正在使用新款整板模式还是旧款逐键模式
+- “显示方式”子菜单切换数字键任务灯和整板状态灯
+- “测试灯光”子菜单提供蓝、绿、橙、红、白和熄灭测试
+- 底部可打开运行日志、输入监控设置、登录项设置或退出应用
 
 模式保存在：
 
@@ -55,7 +55,7 @@ Codex 在 macOS 上原生使用 `Command + 1` … `Command + 9` 打开侧栏中�
 ~/Library/Application Support/Feker Codex Bridge/lighting-mode.txt
 ```
 
-登录和重启后会自动恢复。
+任务灯开关保存在同一目录的 `task-lights-enabled.txt`。登录和重启后会自动恢复这两个设置。
 
 ## 工作原理
 
@@ -177,6 +177,13 @@ sudo ./feker-rgb off
 ```zsh
 FekerCodexBridge --mode per-key
 FekerCodexBridge --mode whole-board
+```
+
+任务灯总开关也可以从命令行控制：
+
+```zsh
+FekerCodexBridge --task-lights on
+FekerCodexBridge --task-lights off
 ```
 
 对已安装版本使用完整路径：

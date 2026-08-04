@@ -107,12 +107,14 @@ static char slot_state_path[PATH_MAX];
 static char selected_slot_path[PATH_MAX];
 static char test_request_path[PATH_MAX];
 static char lighting_mode_path[PATH_MAX];
+static char task_lights_enabled_path[PATH_MAX];
 static char database_path[PATH_MAX];
 static char log_path[PATH_MAX];
 static char executable_path[PATH_MAX];
 static slot_status_t test_statuses[9];
 static time_t test_override_until = 0;
 static lighting_mode_t lighting_mode = LIGHTING_PER_KEY;
+static bool task_lights_enabled = true;
 static bool setuid_installation = false;
 static uid_t real_user_id = 0;
 
@@ -213,6 +215,8 @@ static bool initialize_paths(void) {
              "%s/test-request.tsv", app_support_dir);
     snprintf(lighting_mode_path, sizeof(lighting_mode_path),
              "%s/lighting-mode.txt", app_support_dir);
+    snprintf(task_lights_enabled_path, sizeof(task_lights_enabled_path),
+             "%s/task-lights-enabled.txt", app_support_dir);
     snprintf(database_path, sizeof(database_path), "%s/.codex/state_5.sqlite", home);
     snprintf(log_path, sizeof(log_path), "%s/FekerCodexBridge.log", logs_dir);
 
@@ -669,6 +673,10 @@ static void collect_statuses(slot_status_t statuses[9]) {
 }
 
 static void refresh_lights(void) {
+    if (!task_lights_enabled) {
+        close_rgb_device(true);
+        return;
+    }
     slot_status_t statuses[9];
     if (test_override_until > time(NULL)) {
         memcpy(statuses, test_statuses, sizeof(statuses));
@@ -980,6 +988,47 @@ static bool save_lighting_mode(lighting_mode_t mode) {
     return true;
 }
 
+static bool load_task_lights_enabled(void) {
+    FILE *file = fopen(task_lights_enabled_path, "r");
+    if (file == NULL) {
+        task_lights_enabled = true;
+        return errno == ENOENT;
+    }
+    char value[16] = {0};
+    bool read_ok = fgets(value, sizeof(value), file) != NULL;
+    fclose(file);
+    if (!read_ok) {
+        return false;
+    }
+    value[strcspn(value, "\r\n")] = '\0';
+    if (strcmp(value, "on") == 0) {
+        task_lights_enabled = true;
+    } else if (strcmp(value, "off") == 0) {
+        task_lights_enabled = false;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static bool save_task_lights_enabled(bool enabled) {
+    char temporary_path[PATH_MAX];
+    snprintf(temporary_path, sizeof(temporary_path), "%s.%ld.tmp",
+             task_lights_enabled_path, (long)getpid());
+    FILE *file = fopen(temporary_path, "w");
+    if (file == NULL) {
+        return false;
+    }
+    fprintf(file, "%s\n", enabled ? "on" : "off");
+    if (fclose(file) != 0 ||
+        rename(temporary_path, task_lights_enabled_path) != 0) {
+        unlink(temporary_path);
+        return false;
+    }
+    task_lights_enabled = enabled;
+    return true;
+}
+
 static void process_lighting_mode(struct timespec *last_mtime) {
     if (!file_changed(lighting_mode_path, last_mtime)) {
         return;
@@ -995,6 +1044,24 @@ static void process_lighting_mode(struct timespec *last_mtime) {
                              : "Per-task number-key mode enabled.");
         refresh_lights();
     }
+}
+
+static void process_task_lights_enabled(struct timespec *last_mtime) {
+    if (!file_changed(task_lights_enabled_path, last_mtime)) {
+        return;
+    }
+    bool previous = task_lights_enabled;
+    if (!load_task_lights_enabled()) {
+        log_line("ERROR", "Ignoring an invalid task-light enabled setting.");
+        return;
+    }
+    if (task_lights_enabled == previous) {
+        return;
+    }
+    log_line("MODE", task_lights_enabled
+                         ? "Task lights enabled."
+                         : "Task lights paused; restoring the keyboard lighting.");
+    refresh_lights();
 }
 
 static void process_selected_slot(struct timespec *last_mtime) {
@@ -1072,6 +1139,10 @@ static int run_daemon(void) {
         log_line("ERROR", "Unable to read the saved lighting mode; using per-key mode.");
         lighting_mode = LIGHTING_PER_KEY;
     }
+    if (!load_task_lights_enabled()) {
+        log_line("ERROR", "Unable to read the saved task-light state; enabling it.");
+        task_lights_enabled = true;
+    }
     log_line("READY",
              "Watching Codex tasks. Use Codex native Command+1...9 to switch tasks.");
     save_state();
@@ -1079,6 +1150,7 @@ static int run_daemon(void) {
 
     unsigned int ticks = 0;
     struct timespec mode_mtime = {0, 0};
+    struct timespec enabled_mtime = {0, 0};
     struct timespec selected_mtime = {0, 0};
     struct timespec test_mtime = {0, 0};
     while (!should_stop) {
@@ -1092,6 +1164,7 @@ static int run_daemon(void) {
             process_appended_events(&watched[index]);
         }
         process_lighting_mode(&mode_mtime);
+        process_task_lights_enabled(&enabled_mtime);
         process_selected_slot(&selected_mtime);
         process_test_request(&test_mtime);
         if (test_override_until != 0 && test_override_until <= time(NULL)) {
@@ -1149,10 +1222,64 @@ static int launch_light_service(void) {
 }
 
 #ifdef __OBJC__
-@interface BridgeMenuController : NSObject {
+static NSImage *task_light_menu_icon(bool enabled) {
+    NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(18.0, 18.0)];
+    [image lockFocus];
+
+    [[NSColor blackColor] setStroke];
+    [[NSColor blackColor] setFill];
+    NSBezierPath *keycap = [NSBezierPath
+        bezierPathWithRoundedRect:NSMakeRect(1.5, 2.5, 15.0, 13.0)
+        xRadius:3.0 yRadius:3.0];
+    keycap.lineWidth = 1.5;
+    [keycap stroke];
+
+    if (enabled) {
+        for (CGFloat x = 5.0; x <= 13.0; x += 4.0) {
+            [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(x - 1.0, 8.0,
+                                                               2.0, 2.0)] fill];
+        }
+        NSBezierPath *base = [NSBezierPath bezierPath];
+        base.lineWidth = 1.5;
+        [base moveToPoint:NSMakePoint(5.0, 5.5)];
+        [base lineToPoint:NSMakePoint(13.0, 5.5)];
+        [base stroke];
+    } else {
+        NSBezierPath *pause = [NSBezierPath bezierPath];
+        pause.lineWidth = 1.8;
+        [pause moveToPoint:NSMakePoint(7.0, 6.0)];
+        [pause lineToPoint:NSMakePoint(7.0, 12.0)];
+        [pause moveToPoint:NSMakePoint(11.0, 6.0)];
+        [pause lineToPoint:NSMakePoint(11.0, 12.0)];
+        [pause stroke];
+    }
+
+    [image unlockFocus];
+    image.template = YES;
+    return image;
+}
+
+static bool evision_device_present(void) {
+    struct hid_device_info *devices = hid_enumerate(FEKER_VID, FEKER_PID);
+    bool found = false;
+    for (struct hid_device_info *item = devices; item != NULL;
+         item = item->next) {
+        if (item->usage_page == FEKER_USAGE_PAGE && item->usage == FEKER_USAGE) {
+            found = true;
+            break;
+        }
+    }
+    hid_free_enumeration(devices);
+    return found;
+}
+
+@interface BridgeMenuController : NSObject <NSMenuDelegate> {
     NSStatusItem *status_item;
+    NSMenuItem *toggle_item;
+    NSMenuItem *device_item;
     NSMenuItem *per_key_item;
     NSMenuItem *whole_board_item;
+    NSMenuItem *test_menu_item;
 }
 @end
 
@@ -1165,75 +1292,131 @@ static int launch_light_service(void) {
     }
 
     status_item = [[NSStatusBar systemStatusBar]
-        statusItemWithLength:NSVariableStatusItemLength];
-    status_item.button.title = @"⌨︎";
-    status_item.button.toolTip = @"FEKER × Codex 任务灯";
+        statusItemWithLength:24.0];
+    status_item.button.title = @"";
+    status_item.button.imagePosition = NSImageOnly;
 
-    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"FEKER × Codex"];
-    NSMenuItem *heading = [[NSMenuItem alloc]
-        initWithTitle:@"FEKER × Codex 任务灯" action:nil keyEquivalent:@""];
-    heading.enabled = NO;
-    [menu addItem:heading];
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"FEKER 任务灯"];
+    menu.delegate = self;
+    toggle_item = [[NSMenuItem alloc]
+        initWithTitle:@"任务灯已开启" action:@selector(toggleTaskLights:)
+        keyEquivalent:@""];
+    toggle_item.target = self;
+    [menu addItem:toggle_item];
+
+    device_item = [[NSMenuItem alloc]
+        initWithTitle:@"正在检测键盘…" action:nil keyEquivalent:@""];
+    device_item.enabled = NO;
+    [menu addItem:device_item];
     [menu addItem:[NSMenuItem separatorItem]];
 
+    NSMenuItem *mode_menu_item = [[NSMenuItem alloc]
+        initWithTitle:@"显示方式" action:nil keyEquivalent:@""];
+    NSMenu *mode_menu = [[NSMenu alloc] initWithTitle:@"显示方式"];
     per_key_item = [[NSMenuItem alloc]
-        initWithTitle:@"数字键任务模式（旧款逐键）" action:@selector(choosePerKey:)
+        initWithTitle:@"数字键任务灯" action:@selector(choosePerKey:)
         keyEquivalent:@""];
     per_key_item.target = self;
-    [menu addItem:per_key_item];
+    [mode_menu addItem:per_key_item];
 
     whole_board_item = [[NSMenuItem alloc]
-        initWithTitle:@"全键盘状态灯模式" action:@selector(chooseWholeBoard:)
+        initWithTitle:@"整板状态灯" action:@selector(chooseWholeBoard:)
         keyEquivalent:@""];
     whole_board_item.target = self;
-    [menu addItem:whole_board_item];
+    [mode_menu addItem:whole_board_item];
+    mode_menu_item.submenu = mode_menu;
+    [menu addItem:mode_menu_item];
 
-    NSMenuItem *generation_note = [[NSMenuItem alloc]
-        initWithTitle:@"新款 QMK/VIA 自动使用整板状态色"
-        action:nil keyEquivalent:@""];
-    generation_note.enabled = NO;
-    [menu addItem:generation_note];
-
-    [menu addItem:[NSMenuItem separatorItem]];
+    test_menu_item = [[NSMenuItem alloc]
+        initWithTitle:@"测试灯光" action:nil keyEquivalent:@""];
+    NSMenu *test_menu = [[NSMenu alloc] initWithTitle:@"测试灯光"];
     NSArray<NSArray *> *tests = @[
-        @[@"测试：执行中（蓝）", @(SLOT_WORKING)],
-        @[@"测试：完成未读（绿）", @(SLOT_UNREAD)],
-        @[@"测试：等待操作（橙）", @(SLOT_WAITING)],
-        @[@"测试：错误（红）", @(SLOT_ERROR)],
-        @[@"测试：空闲（白）", @(SLOT_IDLE)],
-        @[@"测试：熄灭", @(SLOT_OFF)],
+        @[@"🔵  执行中", @(SLOT_WORKING)],
+        @[@"🟢  完成未读", @(SLOT_UNREAD)],
+        @[@"🟠  等待操作", @(SLOT_WAITING)],
+        @[@"🔴  出错", @(SLOT_ERROR)],
+        @[@"⚪️  空闲", @(SLOT_IDLE)],
+        @[@"熄灭测试灯", @(SLOT_OFF)],
     ];
     for (NSArray *test in tests) {
         NSMenuItem *item = [[NSMenuItem alloc]
             initWithTitle:test[0] action:@selector(testStatus:) keyEquivalent:@""];
         item.target = self;
         item.tag = [test[1] integerValue];
-        [menu addItem:item];
+        [test_menu addItem:item];
     }
+    test_menu_item.submenu = test_menu;
+    [menu addItem:test_menu_item];
 
     [menu addItem:[NSMenuItem separatorItem]];
     NSMenuItem *open_log = [[NSMenuItem alloc]
-        initWithTitle:@"打开日志" action:@selector(openLog:) keyEquivalent:@""];
+        initWithTitle:@"查看运行日志…" action:@selector(openLog:) keyEquivalent:@""];
     open_log.target = self;
     [menu addItem:open_log];
     NSMenuItem *open_permission = [[NSMenuItem alloc]
-        initWithTitle:@"打开输入监控设置" action:@selector(openInputMonitoring:)
+        initWithTitle:@"输入监控设置…" action:@selector(openInputMonitoring:)
         keyEquivalent:@""];
     open_permission.target = self;
     [menu addItem:open_permission];
+    NSMenuItem *open_login_items = [[NSMenuItem alloc]
+        initWithTitle:@"登录项设置…" action:@selector(openLoginItems:)
+        keyEquivalent:@""];
+    open_login_items.target = self;
+    [menu addItem:open_login_items];
+
+    [menu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *quit_item = [[NSMenuItem alloc]
+        initWithTitle:@"退出 FEKER 任务灯" action:@selector(quit:)
+        keyEquivalent:@"q"];
+    quit_item.target = self;
+    [menu addItem:quit_item];
 
     status_item.menu = menu;
     (void)load_lighting_mode();
-    [self updateChecks];
+    (void)load_task_lights_enabled();
+    [self updateAppearance];
     return self;
 }
 
-- (void)updateChecks {
+- (void)updateAppearance {
+    toggle_item.title = task_lights_enabled ? @"任务灯已开启" : @"任务灯已暂停";
+    toggle_item.state = task_lights_enabled ? NSControlStateValueOn
+                                            : NSControlStateValueOff;
+    test_menu_item.enabled = task_lights_enabled;
     per_key_item.state =
         lighting_mode == LIGHTING_PER_KEY ? NSControlStateValueOn : NSControlStateValueOff;
     whole_board_item.state =
         lighting_mode == LIGHTING_WHOLE_BOARD ? NSControlStateValueOn
                                               : NSControlStateValueOff;
+    status_item.button.image = task_light_menu_icon(task_lights_enabled);
+    status_item.button.toolTip = task_lights_enabled
+                                     ? @"FEKER 任务灯已开启"
+                                     : @"FEKER 任务灯已暂停";
+
+    if (qmk_device_present()) {
+        device_item.title = @"新款 FEKER · 自动使用整板状态色";
+    } else if (evision_device_present()) {
+        device_item.title = lighting_mode == LIGHTING_PER_KEY
+                                ? @"旧款 FEKER · 数字键逐灯显示"
+                                : @"旧款 FEKER · 整板状态色";
+    } else {
+        device_item.title = @"未检测到兼容的有线键盘";
+    }
+}
+
+- (void)menuWillOpen:(NSMenu *)menu {
+    (void)menu;
+    (void)load_lighting_mode();
+    (void)load_task_lights_enabled();
+    [self updateAppearance];
+}
+
+- (void)toggleTaskLights:(id)sender {
+    (void)sender;
+    if (!save_task_lights_enabled(!task_lights_enabled)) {
+        log_line("ERROR", "Unable to save the task-light enabled state.");
+    }
+    [self updateAppearance];
 }
 
 - (void)choosePerKey:(id)sender {
@@ -1241,7 +1424,7 @@ static int launch_light_service(void) {
     if (!save_lighting_mode(LIGHTING_PER_KEY)) {
         log_line("ERROR", "Unable to save per-key lighting mode.");
     }
-    [self updateChecks];
+    [self updateAppearance];
 }
 
 - (void)chooseWholeBoard:(id)sender {
@@ -1249,7 +1432,7 @@ static int launch_light_service(void) {
     if (!save_lighting_mode(LIGHTING_WHOLE_BOARD)) {
         log_line("ERROR", "Unable to save whole-keyboard lighting mode.");
     }
-    [self updateChecks];
+    [self updateAppearance];
 }
 
 - (void)testStatus:(NSMenuItem *)sender {
@@ -1272,6 +1455,21 @@ static int launch_light_service(void) {
     if (url != nil) {
         [[NSWorkspace sharedWorkspace] openURL:url];
     }
+}
+
+- (void)openLoginItems:(id)sender {
+    (void)sender;
+    NSURL *url = [NSURL
+        URLWithString:@"x-apple.systempreferences:com.apple.LoginItems-Settings.extension"];
+    if (url != nil) {
+        [[NSWorkspace sharedWorkspace] openURL:url];
+    }
+}
+
+- (void)quit:(id)sender {
+    (void)sender;
+    should_stop = 1;
+    CFRunLoopStop(CFRunLoopGetCurrent());
 }
 
 @end
@@ -1357,8 +1555,8 @@ static int run_shortcut_observer(void) {
         if (!CGPreflightListenEventAccess()) {
             if (!access_requested) {
                 log_line("PERMISSION",
-                         "Input Monitoring is required for task shortcuts; "
-                         "old-generation FEKER HID access also uses it.");
+                         "Input Monitoring is required only to observe Codex "
+                         "task-switch shortcuts.");
                 (void)CGRequestListenEventAccess();
                 access_requested = true;
             }
@@ -1458,13 +1656,14 @@ static void print_usage(const char *program) {
             "  %s --daemon\n"
             "  %s --launch-light-service\n"
             "  %s --observer\n"
+            "  %s --task-lights on|off\n"
             "  %s --mode per-key|whole-board\n"
             "  %s --select-slot 1-9\n"
             "  %s --request-test-key 1-9 [working|unread|idle|waiting|error|off]\n"
             "  %s --test-key 1-9 [working|unread|idle|waiting|error|off]\n"
             "  %s --off\n",
             program, program, program, program, program, program, program, program,
-            program);
+            program, program);
 }
 
 static bool parse_status(const char *name, slot_status_t *status) {
@@ -1526,6 +1725,15 @@ int main(int argc, char **argv) {
                          : run_shortcut_observer();
         }
 #endif
+    } else if (argc == 3 && strcmp(argv[1], "--task-lights") == 0) {
+        if (strcmp(argv[2], "on") == 0) {
+            result = save_task_lights_enabled(true) ? 0 : 1;
+        } else if (strcmp(argv[2], "off") == 0) {
+            result = save_task_lights_enabled(false) ? 0 : 1;
+        } else {
+            print_usage(argv[0]);
+            result = 2;
+        }
     } else if (argc == 3 && strcmp(argv[1], "--mode") == 0) {
         lighting_mode_t mode;
         if (strcmp(argv[2], "per-key") == 0) {
