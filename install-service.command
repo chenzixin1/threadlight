@@ -58,8 +58,7 @@ open -g "$app_path"
 
 echo
 echo "Installed. Future starts, mode changes, and tests no longer need sudo."
-echo "Add Feker Codex Bridge in:"
-echo "System Settings > General > Login Items & Extensions > Open at Login"
+echo "Right-click the menu bar icon, open Settings, and enable Start at Login."
 echo "Allow Feker Codex Bridge in:"
 echo "System Settings > Privacy & Security > Input Monitoring"
 echo "Then use the keyboard icon in the menu bar to choose a lighting mode or test a color."

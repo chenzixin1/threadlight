@@ -26,6 +26,7 @@
 #ifdef __OBJC__
 #import <AppKit/AppKit.h>
 #import <ApplicationServices/ApplicationServices.h>
+#import <ServiceManagement/ServiceManagement.h>
 #endif
 
 #define FEKER_VID 0x320F
@@ -1275,11 +1276,13 @@ static bool evision_device_present(void) {
 
 @interface BridgeMenuController : NSObject <NSMenuDelegate> {
     NSStatusItem *status_item;
+    NSMenu *status_menu;
     NSMenuItem *toggle_item;
     NSMenuItem *device_item;
     NSMenuItem *per_key_item;
     NSMenuItem *whole_board_item;
     NSMenuItem *test_menu_item;
+    NSMenuItem *login_at_startup_item;
 }
 @end
 
@@ -1295,37 +1298,41 @@ static bool evision_device_present(void) {
         statusItemWithLength:24.0];
     status_item.button.title = @"";
     status_item.button.imagePosition = NSImageOnly;
+    status_item.button.target = self;
+    status_item.button.action = @selector(statusItemClicked:);
+    [status_item.button sendActionOn:NSEventMaskLeftMouseUp |
+                                      NSEventMaskRightMouseUp];
 
-    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"FEKER 任务灯"];
-    menu.delegate = self;
+    status_menu = [[NSMenu alloc] initWithTitle:@"FEKER 任务灯"];
+    status_menu.delegate = self;
     toggle_item = [[NSMenuItem alloc]
         initWithTitle:@"任务灯已开启" action:@selector(toggleTaskLights:)
         keyEquivalent:@""];
     toggle_item.target = self;
-    [menu addItem:toggle_item];
+    [status_menu addItem:toggle_item];
 
     device_item = [[NSMenuItem alloc]
         initWithTitle:@"正在检测键盘…" action:nil keyEquivalent:@""];
     device_item.enabled = NO;
-    [menu addItem:device_item];
-    [menu addItem:[NSMenuItem separatorItem]];
+    [status_menu addItem:device_item];
+    [status_menu addItem:[NSMenuItem separatorItem]];
 
     NSMenuItem *mode_menu_item = [[NSMenuItem alloc]
         initWithTitle:@"显示方式" action:nil keyEquivalent:@""];
     NSMenu *mode_menu = [[NSMenu alloc] initWithTitle:@"显示方式"];
     per_key_item = [[NSMenuItem alloc]
-        initWithTitle:@"数字键任务灯" action:@selector(choosePerKey:)
+        initWithTitle:@"数字键任务灯 — 1–9 对应任务" action:@selector(choosePerKey:)
         keyEquivalent:@""];
     per_key_item.target = self;
     [mode_menu addItem:per_key_item];
 
     whole_board_item = [[NSMenuItem alloc]
-        initWithTitle:@"整板状态灯" action:@selector(chooseWholeBoard:)
+        initWithTitle:@"整板状态灯 — 显示最高优先级" action:@selector(chooseWholeBoard:)
         keyEquivalent:@""];
     whole_board_item.target = self;
     [mode_menu addItem:whole_board_item];
     mode_menu_item.submenu = mode_menu;
-    [menu addItem:mode_menu_item];
+    [status_menu addItem:mode_menu_item];
 
     test_menu_item = [[NSMenuItem alloc]
         initWithTitle:@"测试灯光" action:nil keyEquivalent:@""];
@@ -1346,32 +1353,80 @@ static bool evision_device_present(void) {
         [test_menu addItem:item];
     }
     test_menu_item.submenu = test_menu;
-    [menu addItem:test_menu_item];
+    [status_menu addItem:test_menu_item];
 
-    [menu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *help_item = [[NSMenuItem alloc]
+        initWithTitle:@"使用说明" action:nil keyEquivalent:@""];
+    NSMenu *help_menu = [[NSMenu alloc] initWithTitle:@"使用说明"];
+    NSArray<NSString *> *instructions = @[
+        @"左键图标：开启或暂停任务灯",
+        @"右键图标：打开完整菜单",
+        @"Command + 1…9：切换 Codex 任务",
+    ];
+    for (NSString *instruction in instructions) {
+        NSMenuItem *item = [[NSMenuItem alloc]
+            initWithTitle:instruction action:nil keyEquivalent:@""];
+        item.enabled = NO;
+        [help_menu addItem:item];
+    }
+    [help_menu addItem:[NSMenuItem separatorItem]];
+    NSArray<NSString *> *color_help = @[
+        @"🔵  执行中 — Codex 正在工作",
+        @"🟢  完成未读 — 等你切回查看",
+        @"🟠  等待操作 — 需要输入或批准",
+        @"🔴  出错 — 任务执行失败",
+        @"⚪️  空闲 — 已查看或暂无操作",
+    ];
+    for (NSString *explanation in color_help) {
+        NSMenuItem *item = [[NSMenuItem alloc]
+            initWithTitle:explanation action:nil keyEquivalent:@""];
+        item.enabled = NO;
+        [help_menu addItem:item];
+    }
+    help_item.submenu = help_menu;
+    [status_menu addItem:help_item];
+
+    [status_menu addItem:[NSMenuItem separatorItem]];
     NSMenuItem *open_log = [[NSMenuItem alloc]
         initWithTitle:@"查看运行日志…" action:@selector(openLog:) keyEquivalent:@""];
     open_log.target = self;
-    [menu addItem:open_log];
+    [status_menu addItem:open_log];
+
+    NSMenuItem *settings_item = [[NSMenuItem alloc]
+        initWithTitle:@"设置" action:nil keyEquivalent:@""];
+    NSMenu *settings_menu = [[NSMenu alloc] initWithTitle:@"设置"];
+    login_at_startup_item = [[NSMenuItem alloc]
+        initWithTitle:@"开机自动启动" action:@selector(toggleLoginAtStartup:)
+        keyEquivalent:@""];
+    login_at_startup_item.target = self;
+    [settings_menu addItem:login_at_startup_item];
+    [settings_menu addItem:[NSMenuItem separatorItem]];
     NSMenuItem *open_permission = [[NSMenuItem alloc]
-        initWithTitle:@"输入监控设置…" action:@selector(openInputMonitoring:)
+        initWithTitle:@"输入监控权限…" action:@selector(openInputMonitoring:)
         keyEquivalent:@""];
     open_permission.target = self;
-    [menu addItem:open_permission];
+    [settings_menu addItem:open_permission];
     NSMenuItem *open_login_items = [[NSMenuItem alloc]
-        initWithTitle:@"登录项设置…" action:@selector(openLoginItems:)
+        initWithTitle:@"打开系统登录项设置…" action:@selector(openLoginItems:)
         keyEquivalent:@""];
     open_login_items.target = self;
-    [menu addItem:open_login_items];
+    [settings_menu addItem:open_login_items];
+    settings_item.submenu = settings_menu;
+    [status_menu addItem:settings_item];
 
-    [menu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *project_home = [[NSMenuItem alloc]
+        initWithTitle:@"项目主页（GitHub）…" action:@selector(openProjectHome:)
+        keyEquivalent:@""];
+    project_home.target = self;
+    [status_menu addItem:project_home];
+
+    [status_menu addItem:[NSMenuItem separatorItem]];
     NSMenuItem *quit_item = [[NSMenuItem alloc]
         initWithTitle:@"退出 FEKER 任务灯" action:@selector(quit:)
         keyEquivalent:@"q"];
     quit_item.target = self;
-    [menu addItem:quit_item];
+    [status_menu addItem:quit_item];
 
-    status_item.menu = menu;
     (void)load_lighting_mode();
     (void)load_task_lights_enabled();
     [self updateAppearance];
@@ -1390,8 +1445,22 @@ static bool evision_device_present(void) {
                                               : NSControlStateValueOff;
     status_item.button.image = task_light_menu_icon(task_lights_enabled);
     status_item.button.toolTip = task_lights_enabled
-                                     ? @"FEKER 任务灯已开启"
-                                     : @"FEKER 任务灯已暂停";
+                                     ? @"FEKER 任务灯已开启 · 左键暂停，右键菜单"
+                                     : @"FEKER 任务灯已暂停 · 左键开启，右键菜单";
+
+    if (@available(macOS 13.0, *)) {
+        SMAppServiceStatus login_status = [SMAppService mainAppService].status;
+        login_at_startup_item.state = login_status == SMAppServiceStatusEnabled
+                                          ? NSControlStateValueOn
+                                          : NSControlStateValueOff;
+        login_at_startup_item.title =
+            login_status == SMAppServiceStatusRequiresApproval
+                ? @"开机自动启动（等待系统批准）"
+                : @"开机自动启动";
+    } else {
+        login_at_startup_item.enabled = NO;
+        login_at_startup_item.title = @"开机自动启动（需要 macOS 13）";
+    }
 
     if (qmk_device_present()) {
         device_item.title = @"新款 FEKER · 自动使用整板状态色";
@@ -1402,6 +1471,22 @@ static bool evision_device_present(void) {
     } else {
         device_item.title = @"未检测到兼容的有线键盘";
     }
+}
+
+- (void)statusItemClicked:(id)sender {
+    (void)sender;
+    NSEvent *event = [NSApp currentEvent];
+    bool show_menu = event.type == NSEventTypeRightMouseUp ||
+                     (event.modifierFlags & NSEventModifierFlagControl) != 0;
+    if (show_menu) {
+        [self updateAppearance];
+        [status_menu popUpMenuPositioningItem:nil
+                                   atLocation:NSMakePoint(0.0,
+                                       status_item.button.bounds.size.height + 2.0)
+                                       inView:status_item.button];
+        return;
+    }
+    [self toggleTaskLights:sender];
 }
 
 - (void)menuWillOpen:(NSMenu *)menu {
@@ -1461,6 +1546,38 @@ static bool evision_device_present(void) {
     (void)sender;
     NSURL *url = [NSURL
         URLWithString:@"x-apple.systempreferences:com.apple.LoginItems-Settings.extension"];
+    if (url != nil) {
+        [[NSWorkspace sharedWorkspace] openURL:url];
+    }
+}
+
+- (void)toggleLoginAtStartup:(id)sender {
+    (void)sender;
+    if (@available(macOS 13.0, *)) {
+        SMAppService *service = [SMAppService mainAppService];
+        NSError *error = nil;
+        bool ok = service.status == SMAppServiceStatusEnabled
+                      ? [service unregisterAndReturnError:&error]
+                      : [service registerAndReturnError:&error];
+        if (!ok) {
+            char message[512];
+            snprintf(message, sizeof(message), "Unable to change Login Item: %s",
+                     error.localizedDescription.UTF8String != NULL
+                         ? error.localizedDescription.UTF8String
+                         : "unknown error");
+            log_line("ERROR", message);
+        }
+        [self updateAppearance];
+        if (service.status == SMAppServiceStatusRequiresApproval) {
+            [self openLoginItems:nil];
+        }
+    }
+}
+
+- (void)openProjectHome:(id)sender {
+    (void)sender;
+    NSURL *url = [NSURL
+        URLWithString:@"https://github.com/chenzixin1/feker-codex-bridge"];
     if (url != nil) {
         [[NSWorkspace sharedWorkspace] openURL:url];
     }

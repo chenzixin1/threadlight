@@ -14,6 +14,7 @@ cc -x objective-c -std=c11 -Wall -Wextra -Werror \
   $(pkg-config --cflags --libs hidapi sqlite3) \
   -framework AppKit \
   -framework ApplicationServices \
+  -framework ServiceManagement \
   -o "${app_binary}"
 
 icon_source="${script_dir}/assets/FekerTaskLights.svg"
