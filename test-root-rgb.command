@@ -3,22 +3,26 @@
 script_dir=${0:A:h}
 rgb_tool="${script_dir}/feker-rgb"
 
+echo 'Administrator access is requested once for this entire test session.'
+sudo -v || exit $?
+echo
+
 echo 'Test 1/3: FEKER live RGB command 12, all LED slots RED.'
-sudo "${rgb_tool}" all FF0000
+sudo -n "${rgb_tool}" all FF0000
 test_status=$?
 echo 'Observe the keyboard, then press any key for test 2.'
 read -k 1
 echo
 
 echo 'Test 2/3: only number key 1 GREEN; all other LED slots OFF.'
-sudo "${rgb_tool}" key 1 00FF00
+sudo -n "${rgb_tool}" key 1 00FF00
 (( test_status |= $? ))
 echo 'Observe the keyboard, then press any key for test 3.'
 read -k 1
 echo
 
 echo 'Test 3/3: number keys 1/2/3 GREEN, AMBER, RED.'
-sudo "${rgb_tool}" slots 1=00FF00 2=FFBF00 3=FF0000
+sudo -n "${rgb_tool}" slots 1=00FF00 2=FFBF00 3=FF0000
 (( test_status |= $? ))
 
 echo
