@@ -1298,10 +1298,6 @@ static bool evision_device_present(void) {
         statusItemWithLength:24.0];
     status_item.button.title = @"";
     status_item.button.imagePosition = NSImageOnly;
-    status_item.button.target = self;
-    status_item.button.action = @selector(statusItemClicked:);
-    [status_item.button sendActionOn:NSEventMaskLeftMouseUp |
-                                      NSEventMaskRightMouseUp];
 
     status_menu = [[NSMenu alloc] initWithTitle:@"FEKER 任务灯"];
     status_menu.delegate = self;
@@ -1359,8 +1355,8 @@ static bool evision_device_present(void) {
         initWithTitle:@"使用说明" action:nil keyEquivalent:@""];
     NSMenu *help_menu = [[NSMenu alloc] initWithTitle:@"使用说明"];
     NSArray<NSString *> *instructions = @[
-        @"左键图标：开启或暂停任务灯",
-        @"右键图标：打开完整菜单",
+        @"左键或右键图标：打开菜单",
+        @"菜单第一项：开启或暂停任务灯",
         @"Command + 1…9：切换 Codex 任务",
     ];
     for (NSString *instruction in instructions) {
@@ -1427,6 +1423,7 @@ static bool evision_device_present(void) {
     quit_item.target = self;
     [status_menu addItem:quit_item];
 
+    status_item.menu = status_menu;
     (void)load_lighting_mode();
     (void)load_task_lights_enabled();
     [self updateAppearance];
@@ -1445,8 +1442,8 @@ static bool evision_device_present(void) {
                                               : NSControlStateValueOff;
     status_item.button.image = task_light_menu_icon(task_lights_enabled);
     status_item.button.toolTip = task_lights_enabled
-                                     ? @"FEKER 任务灯已开启 · 左键暂停，右键菜单"
-                                     : @"FEKER 任务灯已暂停 · 左键开启，右键菜单";
+                                     ? @"FEKER 任务灯已开启 · 点击打开菜单"
+                                     : @"FEKER 任务灯已暂停 · 点击打开菜单";
 
     if (@available(macOS 13.0, *)) {
         SMAppServiceStatus login_status = [SMAppService mainAppService].status;
@@ -1473,24 +1470,9 @@ static bool evision_device_present(void) {
     }
 }
 
-- (void)statusItemClicked:(id)sender {
-    (void)sender;
-    NSEvent *event = [NSApp currentEvent];
-    bool show_menu = event.type == NSEventTypeRightMouseUp ||
-                     (event.modifierFlags & NSEventModifierFlagControl) != 0;
-    if (show_menu) {
-        [self updateAppearance];
-        [status_menu popUpMenuPositioningItem:nil
-                                   atLocation:NSMakePoint(0.0,
-                                       status_item.button.bounds.size.height + 2.0)
-                                       inView:status_item.button];
-        return;
-    }
-    [self toggleTaskLights:sender];
-}
-
 - (void)menuWillOpen:(NSMenu *)menu {
     (void)menu;
+    log_line("UI", "Status menu opened.");
     (void)load_lighting_mode();
     (void)load_task_lights_enabled();
     [self updateAppearance];
