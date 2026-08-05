@@ -1295,9 +1295,9 @@ static bool evision_device_present(void) {
     }
 
     status_item = [[NSStatusBar systemStatusBar]
-        statusItemWithLength:24.0];
-    status_item.button.title = @"";
-    status_item.button.imagePosition = NSImageOnly;
+        statusItemWithLength:NSVariableStatusItemLength];
+    status_item.button.title = @" 任务灯";
+    status_item.button.imagePosition = NSImageLeft;
 
     status_menu = [[NSMenu alloc] initWithTitle:@"FEKER 任务灯"];
     status_menu.delegate = self;
@@ -1427,7 +1427,15 @@ static bool evision_device_present(void) {
     (void)load_lighting_mode();
     (void)load_task_lights_enabled();
     [self updateAppearance];
+    if (getenv("FEKER_SHOW_MENU_ON_START") != NULL) {
+        [self performSelector:@selector(showStatusMenuForTesting)
+                   withObject:nil afterDelay:1.0];
+    }
     return self;
+}
+
+- (void)showStatusMenuForTesting {
+    [status_item.button performClick:nil];
 }
 
 - (void)updateAppearance {
