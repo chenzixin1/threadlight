@@ -1431,11 +1431,60 @@ static bool evision_device_present(void) {
         [self performSelector:@selector(showStatusMenuForTesting)
                    withObject:nil afterDelay:1.0];
     }
+    if (getenv("FEKER_RUN_MENU_SELF_TEST") != NULL) {
+        [self performSelector:@selector(runMenuActionSelfTest)
+                   withObject:nil afterDelay:1.0];
+    }
+    if (getenv("FEKER_RUN_MENU_TRACKING_TEST") != NULL) {
+        [self performSelector:@selector(showStatusMenuForTesting)
+                   withObject:nil afterDelay:1.0];
+        NSTimer *timer = [NSTimer
+            timerWithTimeInterval:2.0 target:self
+                         selector:@selector(closeTrackedMenuAndTestAction:)
+                         userInfo:nil repeats:NO];
+        [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
+    }
     return self;
 }
 
 - (void)showStatusMenuForTesting {
     [status_item.button performClick:nil];
+}
+
+- (void)runMenuActionSelfTest {
+    bool original_enabled = task_lights_enabled;
+    lighting_mode_t original_mode = lighting_mode;
+    log_line("UI-TEST", "Starting menu action regression test.");
+
+    [NSApp sendAction:toggle_item.action
+                   to:toggle_item.target from:toggle_item];
+    [NSApp sendAction:toggle_item.action
+                   to:toggle_item.target from:toggle_item];
+    if (task_lights_enabled != original_enabled) {
+        (void)save_task_lights_enabled(original_enabled);
+    }
+
+    [NSApp sendAction:per_key_item.action
+                   to:per_key_item.target from:per_key_item];
+    [NSApp sendAction:whole_board_item.action
+                   to:whole_board_item.target from:whole_board_item];
+    (void)save_lighting_mode(original_mode);
+    [self updateAppearance];
+
+    NSMenuItem *off_test = [test_menu_item.submenu itemAtIndex:5];
+    [NSApp sendAction:off_test.action
+                   to:off_test.target from:off_test];
+    log_line("UI-TEST", "Menu action regression test passed.");
+}
+
+- (void)closeTrackedMenuAndTestAction:(NSTimer *)timer {
+    (void)timer;
+    [status_menu cancelTracking];
+    [NSApp sendAction:toggle_item.action
+                   to:toggle_item.target from:toggle_item];
+    [NSApp sendAction:toggle_item.action
+                   to:toggle_item.target from:toggle_item];
+    log_line("UI-TEST", "Tracked menu open/close regression test passed.");
 }
 
 - (void)updateAppearance {
@@ -1488,6 +1537,9 @@ static bool evision_device_present(void) {
 
 - (void)toggleTaskLights:(id)sender {
     (void)sender;
+    log_line("UI", task_lights_enabled
+                       ? "Menu action: pause task lights."
+                       : "Menu action: enable task lights.");
     if (!save_task_lights_enabled(!task_lights_enabled)) {
         log_line("ERROR", "Unable to save the task-light enabled state.");
     }
@@ -1496,6 +1548,7 @@ static bool evision_device_present(void) {
 
 - (void)choosePerKey:(id)sender {
     (void)sender;
+    log_line("UI", "Menu action: number-key task-light mode.");
     if (!save_lighting_mode(LIGHTING_PER_KEY)) {
         log_line("ERROR", "Unable to save per-key lighting mode.");
     }
@@ -1504,6 +1557,7 @@ static bool evision_device_present(void) {
 
 - (void)chooseWholeBoard:(id)sender {
     (void)sender;
+    log_line("UI", "Menu action: whole-keyboard status mode.");
     if (!save_lighting_mode(LIGHTING_WHOLE_BOARD)) {
         log_line("ERROR", "Unable to save whole-keyboard lighting mode.");
     }
@@ -1511,6 +1565,7 @@ static bool evision_device_present(void) {
 }
 
 - (void)testStatus:(NSMenuItem *)sender {
+    log_line("UI", "Menu action: run a lighting test.");
     if (!write_atomic_slot_file(test_request_path, 1, (int)sender.tag)) {
         log_line("ERROR", "Unable to send the lighting test request.");
     }
@@ -1543,6 +1598,7 @@ static bool evision_device_present(void) {
 
 - (void)toggleLoginAtStartup:(id)sender {
     (void)sender;
+    log_line("UI", "Menu action: toggle launch at login.");
     if (@available(macOS 13.0, *)) {
         SMAppService *service = [SMAppService mainAppService];
         NSError *error = nil;
@@ -1566,6 +1622,7 @@ static bool evision_device_present(void) {
 
 - (void)openProjectHome:(id)sender {
     (void)sender;
+    log_line("UI", "Menu action: open the GitHub project page.");
     NSURL *url = [NSURL
         URLWithString:@"https://github.com/chenzixin1/feker-codex-bridge"];
     if (url != nil) {
@@ -1575,6 +1632,19 @@ static bool evision_device_present(void) {
 
 - (void)quit:(id)sender {
     (void)sender;
+    log_line("UI", "Menu action: request application quit.");
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"退出 FEKER 任务灯？";
+    alert.informativeText =
+        @"任务状态灯会停止，并恢复键盘原有灯效。";
+    [alert addButtonWithTitle:@"取消"];
+    [alert addButtonWithTitle:@"退出"];
+    [NSApp activateIgnoringOtherApps:YES];
+    if ([alert runModal] != NSAlertSecondButtonReturn) {
+        log_line("UI", "Application quit cancelled.");
+        return;
+    }
+    log_line("UI", "Application quit confirmed.");
     should_stop = 1;
     CFRunLoopStop(CFRunLoopGetCurrent());
 }
@@ -1584,6 +1654,9 @@ static bool evision_device_present(void) {
 static BridgeMenuController *menu_controller = nil;
 
 static void setup_menu_bar_ui(void) {
+    [[NSProcessInfo processInfo]
+        disableAutomaticTermination:@"FEKER task-light background service"];
+    [[NSProcessInfo processInfo] disableSuddenTermination];
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     [NSApp finishLaunching];
