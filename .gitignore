@@ -2,5 +2,6 @@
 feker-rgb
 Feker Codex Bridge.app/Contents/MacOS/
 Feker Codex Bridge.app/Contents/_CodeSignature/
+Feker Codex Bridge.app/Contents/Resources/AppIcon.icns
 *.log
 *.tmp
