@@ -1,88 +1,109 @@
-# FEKER Alice80 × Codex task lights
+# FEKER Codex Bridge
 
-把 FEKER Alice80 变成 Codex 任务状态灯。项目同时识别老款 EVision 和新款 QMK/VIA 两代键盘：
+Use a supported FEKER keyboard as a whole-board Codex status light.
 
-| 模式 | 效果 |
+[中文](#中文) · [English](#english)
+
+---
+
+# 中文
+
+FEKER Codex Bridge 是一个 macOS 菜单栏应用。它只读监听本机 Codex 任务状态，并让整块键盘显示当前最高优先级状态。它不映射数字键、不监听快捷键、不需要 Karabiner、Codex Hook 或“输入监控”权限。
+
+## 状态灯逻辑
+
+| 状态 | 默认 Codex 配色 |
 | --- | --- |
-| 数字键任务模式 | 老款：数字行 `1`–`9` 分别显示侧栏中第 1～9 个 Codex 任务；新款自动使用整板聚合色 |
-| 全键盘状态灯模式 | 两代键盘都把整板显示为一个聚合状态，像交通灯 |
+| 执行中 | 蓝色呼吸，峰值 `#304FFE` |
+| 任务刚完成 | 绿色 `#00FF4C`，显示 10 秒 |
+| 空闲 | 白色 `#FFFFFF` |
+| 等待输入或批准 | 橙色 `#FF6D00` |
+| 出错 | 红色 `#FF0033` |
+| 没有任务 | 熄灭 |
 
-状态颜色采用 Codex Micro 的逻辑：
-
-| 灯光 | 状态 |
-| --- | --- |
-| 蓝色呼吸（峰值 `#304FFE`） | 任务正在执行 |
-| 绿色 `#00FF4C` | 任务完成、尚未查看 |
-| 白色 `#FFFFFF` | 任务空闲或已经查看 |
-| 橙色 `#FF6D00` | 任务正在等待输入或批准 |
-| 红色 `#FF0033` | 任务出错 |
-| 熄灭 | 没有对应任务 |
-
-全键盘模式按以下优先级选择颜色：
+多个任务同时存在时，整板显示优先级最高的状态：
 
 ```text
-错误 > 等待操作 > 正在执行 > 完成未读 > 空闲 > 无任务
+出错 > 等待操作 > 执行中 > 刚刚完成 > 空闲 > 无任务
 ```
 
-Codex 在 macOS 上原生使用 `Command + 1` … `Command + 9` 打开侧栏中对应位置的任务。项目只旁听这组快捷键来标记“已查看”，不拦截或重新发送按键，不使用 Karabiner，也不修改 Codex 快捷键。
+## 支持的键盘
 
-> 实验性项目：Codex 的本地数据库和 rollout 日志格式不是稳定的公共 API。两代 RGB 协议都已通过 USB 实测。
+当前只支持下面这一款经过 USB 实测的设备：
 
-## 兼容范围
+| 项目 | 要求 |
+| --- | --- |
+| 型号 | 新版 FEKER Alice80，QMK/VIA 固件版本 |
+| USB 产品名 | `Alice80` |
+| USB VID:PID | `36B0:305F` |
+| Raw HID | usage page `FF60`，usage `0061` |
+| macOS 实测厂商字符串 | `RDMCTMZT` |
 
-- macOS
-- OpenAI Codex 桌面 App
-- FEKER Alice80 老款 EVision 或新款 QMK/VIA
-- 有线模式
-- 老款：USB `320F:5055`，HID `FF1C:0092`
-- 新款：USB `36B0:305F`，QMK Raw HID `FF60:0061`，VIA 协议 `0x000C`
+FEKER 官网提供 Alice80 手册和 Alice80 VIA JSON，但 Alice80 存在不同 PCB/固件版本。购买或安装前请确认是新版 QMK/VIA 版本；旧版 EVision `320F:5055` 不支持。Alice75、Alice98 或其他标有 QMK/VIA 的 FEKER 键盘也不会自动兼容，因为本项目目前只匹配上表中的 USB 身份。
 
-新款原厂固件支持 VIA RGB Matrix 的整板效果、颜色和亮度控制，但会以 `0xFF` 拒绝 VIA 标准逐键绘色通道。因此新款只提供整板状态色；项目不会刷新或修改键盘固件。
+参考资料：[FEKER 官方 Alice80 手册](https://fekertech.com/blogs/manual/feker-alice-80-manual)、[FEKER 官方 QMK/VIA 下载页](https://fekertech.com/blogs/qmk-via)、[Alice80 连接模式说明](https://www.manualslib.com/guide/3387017/feker-alice-80-ergonomic-gasket-keyboard-manual.html)。
 
-## 菜单栏 UI
+### 是否必须有线连接？
 
-安装后，macOS 菜单栏会出现“键帽 + 状态灯”图标和“任务灯”文字标签。图标是原生 Template Image，会自动适配浅色、深色和菜单选中状态；文字标签可避免它淹没在其他菜单栏图标中。菜单采用类似 Caffeine 的简单交互：
+是。任务灯功能目前要求有线 USB-C 连接。
 
-- 第一项直接开启或暂停任务灯；暂停时恢复键盘原有灯效
-- 当前键盘一行说明正在使用新款整板模式还是旧款逐键模式
-- “显示方式”子菜单切换“数字键任务灯（1–9 对应任务）”和“整板状态灯（显示最高优先级）”
-- “测试灯光”子菜单提供蓝、绿、橙、红、白和熄灭测试
-- “使用说明”子菜单解释鼠标操作、Codex 快捷键和每种颜色的含义
-- “设置”里可以直接开关登录时自动启动，也可以打开输入监控与系统登录项设置
-- 可跳转到 GitHub 项目主页、查看日志或退出应用
+Alice80 键盘本身可以通过 Type-C、2.4GHz 和 Bluetooth 打字，但本项目需要 QMK/VIA Raw HID 双向通信。QMK 官方文档把 `RAW_ENABLE` 列为 USB endpoint 功能，VIA 也通过 Raw HID 交换命令。因此：
 
-左键或右键菜单栏图标都会打开完整菜单；第一项直接开启或暂停任务灯。这条交互使用 AppKit 原生菜单绑定，由 macOS 负责弹出位置和菜单栏选中状态。
+| 连接方式 | 普通打字 | FEKER Codex Bridge 状态灯 |
+| --- | --- | --- |
+| USB-C 有线 | 支持 | 支持，唯一保证方式 |
+| 2.4GHz 接收器 | 支持 | 未支持/未验证；尚未确认接收器会暴露相同 Raw HID 接口 |
+| Bluetooth | 支持 | 不支持 |
 
-模式保存在：
+即使 USB-C 同时插着，如果键盘仍处于 Bluetooth 或 2.4GHz 模式，线缆可能只负责充电。请把实体开关拨到 `OFF`，连接 USB-C，然后按 `Fn + N` 进入有线 USB 模式。该步骤来自 Alice80 手册。
 
-```text
-~/Library/Application Support/Feker Codex Bridge/lighting-mode.txt
-```
+协议依据：[QMK USB endpoint limitations](https://docs.qmk.fm/config_options#usb-endpoint-limitations)、[VIA configuring QMK](https://www.caniusevia.com/docs/configuring_qmk/)。
 
-任务灯开关保存在同一目录的 `task-lights-enabled.txt`。登录和重启后会自动恢复这两个设置。
+## 配色方案
 
-## 工作原理
+在菜单栏图标中打开“配色方案”，可选择四套整板配色。选择会保存在 `~/Library/Application Support/Feker Codex Bridge/color-scheme.txt`。
 
-1. 后台桥接程序只读打开 `~/.codex/state_5.sqlite`，按最近可见任务顺序取得最多九个任务。
-2. 它只读监视对应 rollout JSONL 的任务事件，识别执行、完成、等待和错误。
-3. 菜单栏进程只在 Codex 位于前台时，以 listen-only event tap 旁听原生 `Command + 1…9`。
-4. 老款由受限 helper 发送 EVision V2 `0x12` 动态颜色帧并每 100ms 保活；新款由普通用户进程通过 QMK/VIA 32 字节 Raw HID 设置整板 HSV，不写 EEPROM。
-5. App 作为标准 macOS 登录项启动，同时管理菜单栏、快捷键旁听和灯控进程；安装后不需要重复输入管理员密码。
+| 方案 | 执行中 | 完成 | 空闲 | 等待 | 出错 |
+| --- | --- | --- | --- | --- | --- |
+| Codex 默认 | `#304FFE` | `#00FF4C` | `#FFFFFF` | `#FF6D00` | `#FF0033` |
+| 海洋 Ocean | `#00B8FF` | `#00E5A8` | `#BDEBFF` | `#FFB000` | `#FF416C` |
+| 紫罗兰 Violet | `#8B5CF6` | `#2DD4BF` | `#F3E8FF` | `#F59E0B` | `#E11D48` |
+| 日落 Sunset | `#FF8A00` | `#84CC16` | `#FFF3D6` | `#FFD000` | `#FF1744` |
 
-程序没有网络请求，不会上传 Codex 数据。
+所有方案的“执行中”颜色都会使用约两秒一轮的呼吸效果；其他状态常亮。
 
-### 为什么不需要 Codex Hook
+## Codex 设置
 
-PromLight 通过 Codex lifecycle hooks 把事件转给自己的服务。本项目直接只读监听本机 Codex rollout 事件，因此不需要修改 `~/.codex/hooks.json`，也不会占用或覆盖其他 Hook。
+本项目面向 macOS ChatGPT 桌面应用中的 Codex：
 
-## 安装依赖
+1. 从 [ChatGPT 下载页](https://chatgpt.com/download/)安装 macOS 桌面应用并登录。
+2. 新建任务时，在 ChatGPT 下拉菜单中选择 **Codex**。
+3. 选择一个本地文件夹或项目，让 Codex 至少运行一次任务。
+4. 确认 `~/.codex/state_5.sqlite` 已生成。
+5. 启动 FEKER Codex Bridge。应用会自动只读发现任务和 rollout 事件。
+
+OpenAI 官方快速开始说明了桌面应用登录、选择文件夹/项目和切换到 Codex 的流程：[OpenAI ChatGPT/Codex quickstart](https://learn.chatgpt.com/docs/quickstart)。
+
+不需要做以下设置：
+
+- 不需要修改 `~/.codex/hooks.json`
+- 不需要配置 `Command + 1…9` 或 `Option + 数字`
+- 不需要给 FEKER Codex Bridge 开启“输入监控”
+- 不需要安装 Karabiner
+- 不需要 API key
+
+本项目依赖的是 Codex 桌面应用当前的本地数据库与 rollout 文件；这些不是稳定的公开 API，Codex 更新后可能需要同步适配。
+
+## 安装
+
+依赖：
 
 ```zsh
 xcode-select --install
 brew install hidapi sqlite3 pkg-config
 ```
 
-## 安装
+构建并安装：
 
 ```zsh
 git clone https://github.com/chenzixin1/feker-codex-bridge.git
@@ -90,216 +111,239 @@ cd feker-codex-bridge
 ./install-service.command
 ```
 
-也可以在 Finder 中双击 `install-service.command`。
-
-安装器会：
-
-- 编译 `feker-rgb` 和 `Feker Codex Bridge.app`
-- 安装 App 到 `/Applications`
-- 安装受限 helper 到 `/Library/PrivilegedHelperTools`
-- 写入一条仅允许启动该 helper 的精确 `sudoers` 规则
-- 清理本项目旧版本遗留的 LaunchDaemon/LaunchAgent
-- 启动菜单栏 App
-
-安装时输入一次管理员密码。随后不论开机、切换模式还是测试灯光，都不需要再次输入密码。
-
-为了在登录后自动启动，请在下面的位置点 `+`，选择 `/Applications/Feker Codex Bridge.app`：
-
-```text
-系统设置 → 通用 → 登录项与扩展 → 登录时打开
-```
-
-本项目使用标准登录项，不依赖 LaunchAgent；这是 macOS 26 上更稳定、也更容易看见和关闭的方式。
-
-### 建议开启“输入监控”
-
-本地构建使用 ad-hoc 签名。每次重新编译后，macOS 会把它视为新的二进制，因此安装器会清理旧授权。安装结束后请到：
-
-```text
-系统设置 → 隐私与安全性 → 输入监控
-```
-
-添加并允许：
-
-```text
-/Applications/Feker Codex Bridge.app
-```
-
-这个权限只用于让 App 旁听 Codex 的 `Command + 1…9`，从而在切换任务后把绿色或红色的“未查看”状态改成白色。RGB 控制本身不依赖输入监控：老款由受限 helper 打开 HID，新款由普通用户进程打开 QMK Raw HID。
-
-如果暂时不开这个权限，任务状态灯仍会工作，只是快捷键切换后不会自动标记为已查看。
-
-如果列表里已有同名 App 但灯仍不工作，请先移除旧行，再从 `/Applications` 重新添加。不要添加仓库中的构建副本。
+也可以在 Finder 中双击 `install-service.command`。安装器会构建 App、复制到 `/Applications`、进行本地 ad-hoc 签名并启动菜单栏应用。新版不安装 privileged helper 或 `sudoers` 规则。
 
 ## 使用
 
 1. 把 Alice80 实体开关拨到 `OFF`。
-2. 接上 USB-C，按一次 `Fn + N` 进入有线模式。
-3. 在菜单栏 `⌨︎` 中选择显示模式。
-4. 在 Codex 前台使用 `Command + 1…9` 切换任务。
+2. 连接 USB-C，按 `Fn + N` 进入有线模式。
+3. 启动 Codex 并运行一个任务。
+4. 点击菜单栏 Logo，确认显示“FEKER QMK/VIA · 整板状态灯”。
+5. 选择配色，或在“测试灯光”中预览状态。
 
-`Option + 数字` 不是当前 macOS 版 Codex 的任务切换快捷键。
+菜单提供：任务灯开关、四套配色、状态测试、日志、开机启动、GitHub 和退出。暂停或退出时，应用会恢复键盘原有灯效。
 
-不需要先按 `Fn + Del` 切换板载灯效。USB 动态直控与板载效果是两套状态。如果背光完全关闭，可先用 `Fn + L` 打开并调高亮度；必要时长按 `Fn + Backspace` 三秒重置板载灯光设置。
-
-## 灯光测试
-
-安装后可直接使用菜单栏中的测试项。也可以运行：
+## 命令行
 
 ```zsh
-./test-installed.command
+app='/Applications/Feker Codex Bridge.app/Contents/MacOS/FekerCodexBridge'
+
+"$app" --task-lights on
+"$app" --task-lights off
+"$app" --scheme codex
+"$app" --scheme ocean
+"$app" --scheme violet
+"$app" --scheme sunset
+"$app" --request-test working
+"$app" --request-test complete
 ```
 
-或者：
+测试持续 30 秒。其他测试状态为 `idle`、`waiting`、`error` 和 `off`。
 
-```zsh
-'/Applications/Feker Codex Bridge.app/Contents/MacOS/FekerCodexBridge' \
-  --request-test-key 1 unread
-```
+## 工作原理与隐私
 
-测试持续 30 秒：
+1. 只读打开 `~/.codex/state_5.sqlite`，发现未归档任务。
+2. 只读监视对应 rollout JSONL 事件，识别执行、完成、等待和错误。
+3. 通过 QMK/VIA 32 字节 Raw HID 设置整板 HSV，不写键盘 EEPROM。
+4. 菜单进程管理一个灯控子进程；没有快捷键 observer。
 
-- 老款数字键任务模式：数字 `1` 显示绿色
-- 老款全键盘模式和所有新款模式：整把键盘显示绿色
+程序不发起网络请求，也不会上传 Codex 数据、任务标题或内容。
 
-### 安装前的底层测试
-
-```zsh
-./build.sh
-./feker-rgb list
-sudo ./feker-rgb all FF0000
-sudo ./feker-rgb key 1 00FF4C
-sudo ./feker-rgb off
-```
-
-底层颜色命令保持直控模式 60 秒，然后恢复板载灯效。也可以双击 `test-root-rgb.command`。
-
-## 命令参考
-
-### 模式切换
-
-```zsh
-FekerCodexBridge --mode per-key
-FekerCodexBridge --mode whole-board
-```
-
-任务灯总开关也可以从命令行控制：
-
-```zsh
-FekerCodexBridge --task-lights on
-FekerCodexBridge --task-lights off
-```
-
-对已安装版本使用完整路径：
-
-```zsh
-'/Applications/Feker Codex Bridge.app/Contents/MacOS/FekerCodexBridge' \
-  --mode whole-board
-```
-
-### 测试请求
-
-```zsh
-FekerCodexBridge --request-test-key 1-9 \
-  [working|unread|idle|waiting|error|off]
-```
-
-### `feker-rgb`
-
-```text
-feker-rgb list
-feker-rgb probe
-feker-rgb qmk-probe
-feker-rgb qmk-all RRGGBB
-feker-rgb scan
-feker-rgb off
-feker-rgb all RRGGBB
-feker-rgb key 1-9 RRGGBB
-feker-rgb led 0-89 RRGGBB
-feker-rgb slots [1=RRGGBB ... 9=RRGGBB]
-```
-
-## 老款数字键映射
-
-FEKER 的 `320F:5055` 是多个 EVision 设备共用的控制器编号，网上没有可靠的 FEKER Alice80 专属逐键表。本项目采用 OpenRGB EVision V2 驱动中的标准列优先矩阵：
-
-```text
-数字键:  1   2   3   4   5   6   7   8   9
-RGB槽:   7  13  19  25  31  37  43  49  55
-```
-
-每列占六个槽；槽 `6` 是空槽，OpenRGB 同样使用其字节偏移 `18` 发送动态模式保活。
-
-Alice80 的键帽不透光、透明定位板又会扩散光线，所以单颗 LED 在照片中可能看起来像多个键缝发光。需要明确辨识状态时，推荐使用“全键盘状态灯模式”。新款 QMK/VIA 原厂固件未开放标准逐键绘色接口，所以始终使用聚合色。
-
-## 日志
+## 日志与排错
 
 ```zsh
 tail -f ~/Library/Logs/FekerCodexBridge.log
 ```
 
-正常启动会出现：
+正常启动应出现：
 
 ```text
-[READY] Watching Codex tasks
-[READY] Passively observing native Codex Command+1...9 shortcuts
+[READY] Watching Codex task status for whole-board lighting.
+[DEVICE] FEKER QMK/VIA keyboard detected
+[READY] Menu bar UI is accepting mouse input.
 ```
 
-## 卸载
+如果没有灯光变化：
+
+- 确认是 `36B0:305F` 的新版 Alice80。
+- 确认实体开关为 `OFF`，并按过 `Fn + N`。
+- 关闭 VIA、其他 RGB 软件或可能独占 Raw HID 的键盘工具。
+- 在菜单中先运行一个颜色测试。
+- 确认 Codex 已运行过任务，且 `~/.codex/state_5.sqlite` 存在。
+
+卸载：
 
 ```zsh
 ./uninstall-service.command
 ```
 
-卸载器会删除 App、helper、`sudoers` 规则以及旧版本遗留的 LaunchAgent/LaunchDaemon。灯光模式选择和日志会保留；如果系统设置仍显示一个失效的登录项，可手动将它移除。
+---
 
-## 故障排查
+# English
 
-### 灯完全没有变化
+FEKER Codex Bridge is a macOS menu bar app. It reads local Codex task events and displays the highest-priority state across the entire keyboard. It does not map number keys, listen for shortcuts, require Karabiner, install a Codex hook, or request Input Monitoring permission.
 
-- 确认实体开关为 `OFF`、USB-C 已连接，并按过 `Fn + N`。
-- 在菜单栏执行一种颜色测试。
-- 确认“输入监控”中的条目来自 `/Applications`。
-- 查看日志中是否有 `[PERMISSION]`。
+## Status behavior
 
-### `Command + 数字` 能切任务，但完成灯没有变白
+| State | Default Codex colors |
+| --- | --- |
+| Working | Breathing blue, peak `#304FFE` |
+| Just completed | Green `#00FF4C` for 10 seconds |
+| Idle | White `#FFFFFF` |
+| Waiting for input or approval | Amber `#FF6D00` |
+| Error | Red `#FF0033` |
+| No task | Off |
 
-- 确保 Codex 是前台应用。
-- 确保“输入监控”已允许 `Feker Codex Bridge`。
-- 查看日志是否包含 `Passively observing`。
+When several tasks exist, the board shows the highest-priority state:
 
-### `Unable to open the Codex task database`
+```text
+Error > Waiting > Working > Just completed > Idle > No task
+```
 
-- 先启动 Codex 桌面 App 并至少创建一个任务。
-- 确认 `~/.codex/state_5.sqlite` 存在。
+## Supported keyboard
 
-### Codex 更新后不再识别状态
+Only this USB-tested device is currently supported:
 
-Codex 的本地存储结构可能变化。提交 issue 时可附上：
+| Property | Requirement |
+| --- | --- |
+| Model | New FEKER Alice80 revision with QMK/VIA firmware |
+| USB product name | `Alice80` |
+| USB VID:PID | `36B0:305F` |
+| Raw HID | usage page `FF60`, usage `0061` |
+| Manufacturer string observed on macOS | `RDMCTMZT` |
 
-- Codex App 版本
-- macOS 版本
-- 脱敏后的事件类型
-- `feker-rgb list` 输出的 usage page、usage 和 interface
+FEKER publishes an Alice80 manual and an Alice80 VIA JSON, but multiple Alice80 PCB/firmware revisions exist. Confirm that you have the new QMK/VIA revision. The old EVision `320F:5055` revision is not supported. Alice75, Alice98, and other FEKER QMK/VIA boards are not automatically compatible because this app currently matches only the USB identity above.
 
-不要上传 `.codex` 数据库、完整 rollout、任务标题或任务内容。
+Sources: [official FEKER Alice80 manual](https://fekertech.com/blogs/manual/feker-alice-80-manual), [official FEKER QMK/VIA downloads](https://fekertech.com/blogs/qmk-via), and the [readable Alice80 connection guide](https://www.manualslib.com/guide/3387017/feker-alice-80-ergonomic-gasket-keyboard-manual.html).
 
-## 协议参考
+### Is a wired connection required?
 
-- [OpenAI × Work Louder Codex Micro](https://openai.com/supply/co-lab/work-louder/)
-- [Work Louder Codex Micro setup](https://worklouder.cc/openai-micro-setup)
-- [QMK Raw HID](https://docs.qmk.fm/features/rawhid)
-- [VIA app keyboard protocol implementation](https://github.com/the-via/app/blob/main/src/utils/keyboard-api.ts)
-- [OpenRGB EVision V2 controller](https://gitlab.com/CalcProgrammer1/OpenRGB/-/tree/master/Controllers/EVisionKeyboardController/EVisionV2KeyboardController)
-- [OpenRGB EVision V2 raw LED map](https://gitlab.com/CalcProgrammer1/OpenRGB/-/blob/master/Controllers/EVisionKeyboardController/EVisionV2KeyboardController/EVisionV2KeyboardController.cpp)
+Yes. The task-light feature currently requires a wired USB-C connection.
 
-本项目与 OpenAI、FEKER、Work Louder、Karabiner-Elements 和 OpenRGB 均无隶属或背书关系。
+The Alice80 itself supports typing over Type-C, 2.4GHz, and Bluetooth. This bridge, however, needs bidirectional QMK/VIA Raw HID communication. QMK documents `RAW_ENABLE` as a feature that consumes a USB endpoint, and VIA exchanges commands over Raw HID.
 
-## 当前限制
+| Connection | Normal typing | FEKER Codex Bridge lights |
+| --- | --- | --- |
+| Wired USB-C | Supported | Supported and required |
+| 2.4GHz receiver | Supported | Unsupported/unverified; the receiver has not been confirmed to expose the same Raw HID interface |
+| Bluetooth | Supported | Unsupported |
 
-- 同时最多显示九个最近可见任务。
-- 最近任务的数据库顺序通常与侧栏顺序一致；特殊筛选或分组可能暂时错位。
-- 鼠标点击侧栏暂时不会清除绿色/红色未读；原生 `Command + 1…9` 会。
-- 新款 `36B0:305F` 只能使用整板状态色；逐键模式仅适用于老款 `320F:5055`。
-- Codex 本地存储结构随版本变化时可能需要更新解析器。
-- helper 是透明的本地开发者工具结构，不是经过 Apple 公证和发行签名的商业安装包；安装前应查看源码。
+A connected USB-C cable may only charge the keyboard while it remains in a wireless mode. Move the hardware switch to `OFF`, connect USB-C, and press `Fn + N` to select wired USB mode, as described by the Alice80 manual.
+
+Protocol references: [QMK USB endpoint limitations](https://docs.qmk.fm/config_options#usb-endpoint-limitations) and [VIA configuring QMK](https://www.caniusevia.com/docs/configuring_qmk/).
+
+## Color schemes
+
+Open **Color scheme / 配色方案** from the menu bar icon. The selection is saved to `~/Library/Application Support/Feker Codex Bridge/color-scheme.txt`.
+
+| Scheme | Working | Complete | Idle | Waiting | Error |
+| --- | --- | --- | --- | --- | --- |
+| Codex Default | `#304FFE` | `#00FF4C` | `#FFFFFF` | `#FF6D00` | `#FF0033` |
+| Ocean | `#00B8FF` | `#00E5A8` | `#BDEBFF` | `#FFB000` | `#FF416C` |
+| Violet | `#8B5CF6` | `#2DD4BF` | `#F3E8FF` | `#F59E0B` | `#E11D48` |
+| Sunset | `#FF8A00` | `#84CC16` | `#FFF3D6` | `#FFD000` | `#FF1744` |
+
+The working color breathes on a roughly two-second cycle in every scheme. Other states are solid.
+
+## Codex setup
+
+This project targets Codex inside the macOS ChatGPT desktop app:
+
+1. Install the macOS app from the [ChatGPT download page](https://chatgpt.com/download/) and sign in.
+2. When creating a task, choose **Codex** from the ChatGPT dropdown.
+3. Select a local folder or project and run at least one Codex task.
+4. Confirm that `~/.codex/state_5.sqlite` exists.
+5. Start FEKER Codex Bridge. It discovers tasks and rollout events automatically in read-only mode.
+
+OpenAI's quickstart covers desktop sign-in, choosing a folder or project, and selecting Codex: [OpenAI ChatGPT/Codex quickstart](https://learn.chatgpt.com/docs/quickstart).
+
+You do not need to configure `~/.codex/hooks.json`, number-key shortcuts, Input Monitoring, Karabiner, or an API key.
+
+The bridge relies on the desktop app's current local database and rollout format. These are not stable public APIs and may require updates after a Codex release.
+
+## Install
+
+Dependencies:
+
+```zsh
+xcode-select --install
+brew install hidapi sqlite3 pkg-config
+```
+
+Build and install:
+
+```zsh
+git clone https://github.com/chenzixin1/feker-codex-bridge.git
+cd feker-codex-bridge
+./install-service.command
+```
+
+You can also double-click `install-service.command` in Finder. It builds the app, copies it to `/Applications`, applies a local ad-hoc signature, and starts the menu bar app. The current version does not install a privileged helper or a `sudoers` rule.
+
+## Use
+
+1. Move the Alice80 hardware switch to `OFF`.
+2. Connect USB-C and press `Fn + N` for wired mode.
+3. Start a Codex task.
+4. Click the menu bar logo and confirm **FEKER QMK/VIA · whole-board task light**.
+5. Pick a scheme or preview states under **Test lights / 测试灯光**.
+
+The menu includes the light toggle, four schemes, state tests, logs, launch at login, GitHub, and Quit. Pausing or quitting restores the keyboard's previous RGB effect.
+
+## Command line
+
+```zsh
+app='/Applications/Feker Codex Bridge.app/Contents/MacOS/FekerCodexBridge'
+
+"$app" --task-lights on
+"$app" --task-lights off
+"$app" --scheme codex
+"$app" --scheme ocean
+"$app" --scheme violet
+"$app" --scheme sunset
+"$app" --request-test working
+"$app" --request-test complete
+```
+
+Tests last 30 seconds. Other states are `idle`, `waiting`, `error`, and `off`.
+
+## How it works and privacy
+
+1. Opens `~/.codex/state_5.sqlite` read-only to discover unarchived tasks.
+2. Watches the corresponding rollout JSONL files read-only for working, complete, waiting, and error events.
+3. Sends whole-board HSV through 32-byte QMK/VIA Raw HID reports without writing keyboard EEPROM.
+4. Runs one menu process and one lighting child process; there is no shortcut observer.
+
+The app makes no network requests and does not upload Codex data, task titles, or task content.
+
+## Logs and troubleshooting
+
+```zsh
+tail -f ~/Library/Logs/FekerCodexBridge.log
+```
+
+Expected startup lines:
+
+```text
+[READY] Watching Codex task status for whole-board lighting.
+[DEVICE] FEKER QMK/VIA keyboard detected
+[READY] Menu bar UI is accepting mouse input.
+```
+
+If the lights do not change:
+
+- Confirm the new `36B0:305F` Alice80 revision.
+- Move the hardware switch to `OFF` and press `Fn + N`.
+- Quit VIA or other RGB/keyboard tools that may hold Raw HID exclusively.
+- Run a color test from the menu.
+- Confirm Codex has run at least one task and `~/.codex/state_5.sqlite` exists.
+
+Uninstall:
+
+```zsh
+./uninstall-service.command
+```
+
+## License and affiliation
+
+This experimental project is not affiliated with or endorsed by OpenAI, FEKER, Work Louder, QMK, or VIA.

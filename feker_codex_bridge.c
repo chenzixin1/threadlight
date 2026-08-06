@@ -4,7 +4,6 @@
 #include <fcntl.h>
 #include <hidapi.h>
 #include <limits.h>
-#include <pwd.h>
 #include <signal.h>
 #include <sqlite3.h>
 #include <stdbool.h>
@@ -25,34 +24,19 @@
 
 #ifdef __OBJC__
 #import <AppKit/AppKit.h>
-#import <ApplicationServices/ApplicationServices.h>
 #import <ServiceManagement/ServiceManagement.h>
 #endif
 
-#define FEKER_VID 0x320F
-#define FEKER_PID 0x5055
-#define FEKER_USAGE_PAGE 0xFF1C
-#define FEKER_USAGE 0x0092
 #define FEKER_QMK_VID 0x36B0
 #define FEKER_QMK_PID 0x305F
 #define FEKER_QMK_USAGE_PAGE 0xFF60
 #define FEKER_QMK_USAGE 0x0061
 #define QMK_REPORT_SIZE 32
-#define REPORT_SIZE 64
-#define LED_COUNT 90
-#define COLOR_BYTES (LED_COUNT * 3)
-#define MAX_COLOR_PAYLOAD 0x36
-#define DIRECT_REFRESH_OFFSET 18
-#define DIRECT_REFRESH_INTERVAL_US 100000
+#define DAEMON_TICK_INTERVAL_US 100000
 #define WORKING_BREATH_FRAME_COUNT 20
+#define COMPLETE_HOLD_SECONDS 10
 #define MAX_THREADS 128
 #define MAX_TITLE 256
-
-/*
- * Column-major matrix with six slots per column.  Slot 6 is intentionally
- * blank and is used for the direct-mode keepalive, so number 1 begins at 7.
- */
-static const int number_key_leds[9] = {7, 13, 19, 25, 31, 37, 43, 49, 55};
 
 typedef struct {
     uint8_t r;
@@ -63,62 +47,52 @@ typedef struct {
 typedef enum {
     SLOT_OFF = 0,
     SLOT_WORKING,
-    SLOT_UNREAD,
+    SLOT_COMPLETE,
     SLOT_IDLE,
     SLOT_WAITING,
     SLOT_ERROR,
 } slot_status_t;
 
 typedef enum {
-    LIGHTING_PER_KEY = 0,
-    LIGHTING_WHOLE_BOARD,
-} lighting_mode_t;
-
-typedef enum {
-    RGB_PROTOCOL_NONE = 0,
-    RGB_PROTOCOL_EVISION,
-    RGB_PROTOCOL_QMK_VIA,
-} rgb_protocol_t;
+    COLOR_SCHEME_CODEX = 0,
+    COLOR_SCHEME_OCEAN,
+    COLOR_SCHEME_VIOLET,
+    COLOR_SCHEME_SUNSET,
+    COLOR_SCHEME_COUNT,
+} color_scheme_t;
 
 typedef struct {
     char thread_id[64];
     char rollout_path[PATH_MAX];
     char title[MAX_TITLE];
     off_t offset;
-    int slot;
     slot_status_t status;
     time_t touched_at;
     bool initialized;
+    bool active;
 } watched_thread_t;
 
 static volatile sig_atomic_t should_stop = 0;
 static watched_thread_t watched[MAX_THREADS];
 static size_t watched_count = 0;
 static bool hid_permission_warning_printed = false;
-static bool hid_refresh_warning_printed = false;
 static hid_device *rgb_device = NULL;
-static bool rgb_frame_active = false;
-static rgb_protocol_t rgb_protocol = RGB_PROTOCOL_NONE;
 static bool qmk_generation_warning_printed = false;
 static bool qmk_original_saved = false;
 static uint8_t qmk_original_brightness = 0;
 static uint8_t qmk_original_effect = 0;
 static uint8_t qmk_original_color[2] = {0, 0};
 static char app_support_dir[PATH_MAX];
-static char slot_state_path[PATH_MAX];
-static char selected_slot_path[PATH_MAX];
 static char test_request_path[PATH_MAX];
-static char lighting_mode_path[PATH_MAX];
 static char task_lights_enabled_path[PATH_MAX];
+static char color_scheme_path[PATH_MAX];
 static char database_path[PATH_MAX];
 static char log_path[PATH_MAX];
 static char executable_path[PATH_MAX];
-static slot_status_t test_statuses[9];
+static slot_status_t test_status = SLOT_OFF;
 static time_t test_override_until = 0;
-static lighting_mode_t lighting_mode = LIGHTING_PER_KEY;
 static bool task_lights_enabled = true;
-static bool setuid_installation = false;
-static uid_t real_user_id = 0;
+static color_scheme_t color_scheme = COLOR_SCHEME_CODEX;
 static size_t working_breath_frame = 0;
 
 static void handle_signal(int signal_number) {
@@ -134,57 +108,6 @@ static void log_line(const char *level, const char *message) {
     strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &local_time);
     fprintf(stderr, "%s [%s] %s\n", timestamp, level, message);
     fflush(stderr);
-}
-
-static bool configure_process_identity(int argc, char **argv) {
-    real_user_id = getuid();
-    const char *delegated_uid = getenv("FEKER_USER_UID");
-    if (geteuid() == 0 && real_user_id == 0 &&
-        delegated_uid != NULL && delegated_uid[0] != '\0') {
-        char *end = NULL;
-        unsigned long parsed = strtoul(delegated_uid, &end, 10);
-        bool daemon_mode =
-            argc == 1 || (argc == 2 && strcmp(argv[1], "--daemon") == 0);
-        if (!daemon_mode || end == delegated_uid || *end != '\0' ||
-            parsed == 0 || parsed > UINT_MAX) {
-            fputs("Invalid delegated helper identity.\n", stderr);
-            return false;
-        }
-        real_user_id = (uid_t)parsed;
-        struct passwd *account = getpwuid(real_user_id);
-        if (account == NULL || account->pw_dir == NULL ||
-            setenv("HOME", account->pw_dir, 1) != 0 ||
-            seteuid(real_user_id) != 0) {
-            fputs("Unable to enter the delegated user's context.\n", stderr);
-            return false;
-        }
-        setuid_installation = true;
-        return true;
-    }
-    if (geteuid() != 0 || real_user_id == 0) {
-        return true;
-    }
-
-    bool daemon_mode =
-        argc == 1 || (argc == 2 && strcmp(argv[1], "--daemon") == 0);
-    if (!daemon_mode) {
-        fputs("The installed privileged helper only accepts --daemon.\n", stderr);
-        return false;
-    }
-
-    struct passwd *account = getpwuid(real_user_id);
-    if (account == NULL || account->pw_dir == NULL ||
-        account->pw_dir[0] == '\0') {
-        fputs("Unable to resolve the invoking user.\n", stderr);
-        return false;
-    }
-    if (setenv("HOME", account->pw_dir, 1) != 0 ||
-        seteuid(real_user_id) != 0) {
-        fputs("Unable to enter the invoking user's security context.\n", stderr);
-        return false;
-    }
-    setuid_installation = true;
-    return true;
 }
 
 static bool ensure_directory(const char *path) {
@@ -211,15 +134,12 @@ static bool initialize_paths(void) {
     snprintf(logs_dir, sizeof(logs_dir), "%s/Logs", library_dir);
     snprintf(app_support_dir, sizeof(app_support_dir),
              "%s/Feker Codex Bridge", application_support_dir);
-    snprintf(slot_state_path, sizeof(slot_state_path), "%s/slots.tsv", app_support_dir);
-    snprintf(selected_slot_path, sizeof(selected_slot_path),
-             "%s/selected-slot.txt", app_support_dir);
     snprintf(test_request_path, sizeof(test_request_path),
              "%s/test-request.tsv", app_support_dir);
-    snprintf(lighting_mode_path, sizeof(lighting_mode_path),
-             "%s/lighting-mode.txt", app_support_dir);
     snprintf(task_lights_enabled_path, sizeof(task_lights_enabled_path),
              "%s/task-lights-enabled.txt", app_support_dir);
+    snprintf(color_scheme_path, sizeof(color_scheme_path),
+             "%s/color-scheme.txt", app_support_dir);
     snprintf(database_path, sizeof(database_path), "%s/.codex/state_5.sqlite", home);
     snprintf(log_path, sizeof(log_path), "%s/FekerCodexBridge.log", logs_dir);
 
@@ -274,122 +194,49 @@ static void configure_background_logging(void) {
     setvbuf(stderr, NULL, _IOLBF, 0);
 }
 
-static void compute_checksum(uint8_t packet[REPORT_SIZE]) {
-    uint16_t checksum = 0;
-    for (size_t index = 3; index < REPORT_SIZE; index++) {
-        checksum = (uint16_t)(checksum + packet[index]);
-    }
-    packet[1] = (uint8_t)(checksum & 0xFF);
-    packet[2] = (uint8_t)(checksum >> 8);
-}
-
 static hid_device *open_rgb_device(void) {
-    bool elevated = false;
-    if (setuid_installation) {
-        if (seteuid(0) != 0) {
-            log_line("ERROR", "Unable to acquire the narrow HID privilege.");
-            return NULL;
-        }
-        elevated = true;
-    }
-
-    struct hid_device_info *devices = hid_enumerate(FEKER_VID, FEKER_PID);
+    struct hid_device_info *devices =
+        hid_enumerate(FEKER_QMK_VID, FEKER_QMK_PID);
     const char *chosen_path = NULL;
     char path_copy[PATH_MAX];
-    rgb_protocol_t chosen_protocol = RGB_PROTOCOL_NONE;
 
     for (struct hid_device_info *item = devices; item != NULL; item = item->next) {
-        if (item->usage_page == FEKER_USAGE_PAGE && item->usage == FEKER_USAGE &&
-            item->path != NULL) {
+        if (item->usage_page == FEKER_QMK_USAGE_PAGE &&
+            item->usage == FEKER_QMK_USAGE && item->path != NULL) {
             snprintf(path_copy, sizeof(path_copy), "%s", item->path);
             chosen_path = path_copy;
-            chosen_protocol = RGB_PROTOCOL_EVISION;
             break;
         }
     }
     hid_free_enumeration(devices);
 
     if (chosen_path == NULL) {
-        devices = hid_enumerate(FEKER_QMK_VID, FEKER_QMK_PID);
-        for (struct hid_device_info *item = devices; item != NULL;
-             item = item->next) {
-            if (item->usage_page == FEKER_QMK_USAGE_PAGE &&
-                item->usage == FEKER_QMK_USAGE && item->path != NULL) {
-                snprintf(path_copy, sizeof(path_copy), "%s", item->path);
-                chosen_path = path_copy;
-                chosen_protocol = RGB_PROTOCOL_QMK_VIA;
-                break;
-            }
-        }
-        hid_free_enumeration(devices);
-    }
-
-    if (chosen_path == NULL) {
-        if (elevated) {
-            (void)seteuid(real_user_id);
-        }
         if (!hid_permission_warning_printed) {
             log_line("ERROR",
-                     "No supported old- or new-generation FEKER Alice80 RGB "
-                     "interface was found.");
+                     "FEKER QMK/VIA Raw HID interface was not found "
+                     "(expected 36B0:305F, usage FF60:0061).");
             hid_permission_warning_printed = true;
         }
         return NULL;
     }
 
     hid_device *device = hid_open_path(chosen_path);
-    if (elevated && seteuid(real_user_id) != 0) {
-        log_line("ERROR", "Unable to drop the narrow HID privilege.");
-        if (device != NULL) {
-            hid_close(device);
-        }
-        return NULL;
-    }
     if (device == NULL && !hid_permission_warning_printed) {
         log_line("PERMISSION",
-                 "macOS blocked FEKER RGB access. Enable Input Monitoring for "
-                 "Feker Codex Bridge in System Settings > Privacy & Security.");
+                 "Unable to open FEKER Raw HID. Reconnect the keyboard and "
+                 "close other RGB control software.");
         hid_permission_warning_printed = true;
     }
     if (device != NULL) {
         hid_permission_warning_printed = false;
-        rgb_protocol = chosen_protocol;
-        if (rgb_protocol == RGB_PROTOCOL_QMK_VIA &&
-            !qmk_generation_warning_printed) {
+        if (!qmk_generation_warning_printed) {
             log_line("DEVICE",
-                     "New-generation FEKER QMK/VIA keyboard detected; "
-                     "using whole-keyboard status colors.");
+                     "FEKER QMK/VIA keyboard detected; using whole-keyboard "
+                     "status colors.");
             qmk_generation_warning_printed = true;
         }
     }
     return device;
-}
-
-static bool send_packet(hid_device *device, uint8_t packet[REPORT_SIZE]) {
-    int written = hid_write(device, packet, REPORT_SIZE);
-    if (written != REPORT_SIZE) {
-        return false;
-    }
-
-    uint8_t response[REPORT_SIZE];
-    memset(response, 0, sizeof(response));
-    int received = hid_read_timeout(device, response, sizeof(response), 300);
-    return received > 0 &&
-           (received < 4 || response[3] == packet[3]) &&
-           (received < 8 || response[7] == 0);
-}
-
-static bool send_query(hid_device *device, uint8_t command,
-                       uint16_t offset, uint8_t size) {
-    uint8_t packet[REPORT_SIZE];
-    memset(packet, 0, sizeof(packet));
-    packet[0] = 0x04;
-    packet[3] = command;
-    packet[4] = size;
-    packet[5] = (uint8_t)(offset & 0xFF);
-    packet[6] = (uint8_t)(offset >> 8);
-    compute_checksum(packet);
-    return send_packet(device, packet);
 }
 
 static bool qmk_exchange(hid_device *device, uint8_t command,
@@ -477,8 +324,7 @@ static void rgb_to_hsv(rgb_t color, uint8_t *hue,
 }
 
 static bool capture_qmk_original(void) {
-    if (qmk_original_saved || rgb_device == NULL ||
-        rgb_protocol != RGB_PROTOCOL_QMK_VIA) {
+    if (qmk_original_saved || rgb_device == NULL) {
         return true;
     }
     if (!qmk_read_menu_value(rgb_device, 0x01,
@@ -506,8 +352,7 @@ static bool apply_qmk_whole_board(rgb_t color) {
 }
 
 static void restore_qmk_original(void) {
-    if (!qmk_original_saved || rgb_device == NULL ||
-        rgb_protocol != RGB_PROTOCOL_QMK_VIA) {
+    if (!qmk_original_saved || rgb_device == NULL) {
         return;
     }
     (void)qmk_set_menu_value(rgb_device, 0x02, &qmk_original_effect, 1);
@@ -520,15 +365,11 @@ static void close_rgb_device(bool end_direct_mode) {
     if (rgb_device == NULL) {
         return;
     }
-    if (end_direct_mode && rgb_protocol == RGB_PROTOCOL_QMK_VIA) {
+    if (end_direct_mode) {
         restore_qmk_original();
-    } else if (end_direct_mode && rgb_frame_active) {
-        (void)send_query(rgb_device, 0x13, 0, 0);
     }
     hid_close(rgb_device);
     rgb_device = NULL;
-    rgb_frame_active = false;
-    rgb_protocol = RGB_PROTOCOL_NONE;
     qmk_original_saved = false;
 }
 
@@ -556,54 +397,66 @@ static bool qmk_device_present(void) {
     return found;
 }
 
-static bool refresh_direct_mode(void) {
-    if (!rgb_frame_active || rgb_device == NULL) {
-        return false;
-    }
-    if (rgb_protocol == RGB_PROTOCOL_QMK_VIA) {
-        return true;
-    }
-    if (send_query(rgb_device, 0x12, DIRECT_REFRESH_OFFSET, 1)) {
-        hid_refresh_warning_printed = false;
-        return true;
-    }
-    if (!hid_refresh_warning_printed) {
-        log_line("ERROR", "FEKER direct-mode keepalive failed; reconnecting.");
-        hid_refresh_warning_printed = true;
-    }
-    close_rgb_device(false);
-    return false;
-}
-
-static slot_status_t aggregate_status(const slot_status_t statuses[9]) {
+static int status_priority(slot_status_t status) {
     static const int priority[] = {
         [SLOT_OFF] = 0,
         [SLOT_IDLE] = 1,
-        [SLOT_UNREAD] = 2,
+        [SLOT_COMPLETE] = 2,
         [SLOT_WORKING] = 3,
         [SLOT_WAITING] = 4,
         [SLOT_ERROR] = 5,
     };
+    return priority[status];
+}
+
+static slot_status_t aggregate_watched_status(void) {
     slot_status_t aggregate = SLOT_OFF;
-    for (int index = 0; index < 9; index++) {
-        if (priority[statuses[index]] > priority[aggregate]) {
-            aggregate = statuses[index];
+    for (size_t index = 0; index < watched_count; index++) {
+        if (watched[index].active &&
+            status_priority(watched[index].status) >
+                status_priority(aggregate)) {
+            aggregate = watched[index].status;
         }
     }
     return aggregate;
 }
 
 static rgb_t color_for_status(slot_status_t status) {
-    /* Exact status palette used by Codex Micro in Codex 26.721.31836. */
-    static const rgb_t colors_by_status[] = {
-        [SLOT_OFF] = {0x00, 0x00, 0x00},
-        [SLOT_WORKING] = {0x30, 0x4F, 0xFE},
-        [SLOT_UNREAD] = {0x00, 0xFF, 0x4C},
-        [SLOT_IDLE] = {0xFF, 0xFF, 0xFF},
-        [SLOT_WAITING] = {0xFF, 0x6D, 0x00},
-        [SLOT_ERROR] = {0xFF, 0x00, 0x33},
+    static const rgb_t palettes[COLOR_SCHEME_COUNT][SLOT_ERROR + 1] = {
+        [COLOR_SCHEME_CODEX] = {
+            [SLOT_OFF] = {0x00, 0x00, 0x00},
+            [SLOT_WORKING] = {0x30, 0x4F, 0xFE},
+            [SLOT_COMPLETE] = {0x00, 0xFF, 0x4C},
+            [SLOT_IDLE] = {0xFF, 0xFF, 0xFF},
+            [SLOT_WAITING] = {0xFF, 0x6D, 0x00},
+            [SLOT_ERROR] = {0xFF, 0x00, 0x33},
+        },
+        [COLOR_SCHEME_OCEAN] = {
+            [SLOT_OFF] = {0x00, 0x00, 0x00},
+            [SLOT_WORKING] = {0x00, 0xB8, 0xFF},
+            [SLOT_COMPLETE] = {0x00, 0xE5, 0xA8},
+            [SLOT_IDLE] = {0xBD, 0xEB, 0xFF},
+            [SLOT_WAITING] = {0xFF, 0xB0, 0x00},
+            [SLOT_ERROR] = {0xFF, 0x41, 0x6C},
+        },
+        [COLOR_SCHEME_VIOLET] = {
+            [SLOT_OFF] = {0x00, 0x00, 0x00},
+            [SLOT_WORKING] = {0x8B, 0x5C, 0xF6},
+            [SLOT_COMPLETE] = {0x2D, 0xD4, 0xBF},
+            [SLOT_IDLE] = {0xF3, 0xE8, 0xFF},
+            [SLOT_WAITING] = {0xF5, 0x9E, 0x0B},
+            [SLOT_ERROR] = {0xE1, 0x1D, 0x48},
+        },
+        [COLOR_SCHEME_SUNSET] = {
+            [SLOT_OFF] = {0x00, 0x00, 0x00},
+            [SLOT_WORKING] = {0xFF, 0x8A, 0x00},
+            [SLOT_COMPLETE] = {0x84, 0xCC, 0x16},
+            [SLOT_IDLE] = {0xFF, 0xF3, 0xD6},
+            [SLOT_WAITING] = {0xFF, 0xD0, 0x00},
+            [SLOT_ERROR] = {0xFF, 0x17, 0x44},
+        },
     };
-    rgb_t color = colors_by_status[status];
+    rgb_t color = palettes[color_scheme][status];
     if (status == SLOT_WORKING) {
         /* A cosine-like two-second pulse, starting at full Codex blue. */
         static const uint8_t breath_scale[WORKING_BREATH_FRAME_COUNT] = {
@@ -618,83 +471,17 @@ static rgb_t color_for_status(slot_status_t status) {
     return color;
 }
 
-static bool apply_slot_colors(const slot_status_t statuses[9]) {
-    slot_status_t aggregate = aggregate_status(statuses);
-
+static bool apply_status_color(slot_status_t status) {
     if (!ensure_rgb_device()) {
         return false;
     }
-    if (rgb_protocol == RGB_PROTOCOL_QMK_VIA) {
-        bool ok = capture_qmk_original() &&
-                  apply_qmk_whole_board(color_for_status(aggregate));
-        if (!ok) {
-            log_line("ERROR",
-                     "New-generation FEKER did not acknowledge the VIA RGB "
-                     "update.");
-            close_rgb_device(false);
-        } else {
-            rgb_frame_active = true;
-        }
-        return ok;
-    }
-
-    rgb_t led_colors[LED_COUNT];
-    if (lighting_mode == LIGHTING_WHOLE_BOARD) {
-        for (size_t index = 0; index < LED_COUNT; index++) {
-            led_colors[index] = color_for_status(aggregate);
-        }
-    } else {
-        memset(led_colors, 0, sizeof(led_colors));
-        for (int index = 0; index < 9; index++) {
-            led_colors[number_key_leds[index]] =
-                color_for_status(statuses[index]);
-        }
-    }
-
-    bool ok = true;
-
-    uint8_t color_bytes[COLOR_BYTES];
-    for (size_t index = 0; index < LED_COUNT; index++) {
-        color_bytes[index * 3] = led_colors[index].r;
-        color_bytes[index * 3 + 1] = led_colors[index].g;
-        color_bytes[index * 3 + 2] = led_colors[index].b;
-    }
-
-    for (size_t offset = 0; ok && offset < COLOR_BYTES; offset += MAX_COLOR_PAYLOAD) {
-        size_t remaining = COLOR_BYTES - offset;
-        size_t payload_size = remaining < MAX_COLOR_PAYLOAD ? remaining : MAX_COLOR_PAYLOAD;
-        uint8_t packet[REPORT_SIZE];
-        memset(packet, 0, sizeof(packet));
-        packet[0] = 0x04;
-        /* EVision V2 live/dynamic RGB command used by this Alice80. */
-        packet[3] = 0x12;
-        packet[4] = (uint8_t)payload_size;
-        packet[5] = (uint8_t)(offset & 0xFF);
-        packet[6] = (uint8_t)(offset >> 8);
-        memcpy(&packet[8], &color_bytes[offset], payload_size);
-        compute_checksum(packet);
-        ok = send_packet(rgb_device, packet);
-    }
-
+    bool ok = capture_qmk_original() &&
+              apply_qmk_whole_board(color_for_status(status));
     if (!ok) {
-        log_line("ERROR", "FEKER did not acknowledge the RGB update.");
+        log_line("ERROR", "FEKER did not acknowledge the VIA RGB update.");
         close_rgb_device(false);
-    } else {
-        rgb_frame_active = true;
-        hid_refresh_warning_printed = false;
     }
     return ok;
-}
-
-static void collect_statuses(slot_status_t statuses[9]) {
-    for (int index = 0; index < 9; index++) {
-        statuses[index] = SLOT_OFF;
-    }
-    for (size_t index = 0; index < watched_count; index++) {
-        if (watched[index].slot >= 1 && watched[index].slot <= 9) {
-            statuses[watched[index].slot - 1] = watched[index].status;
-        }
-    }
 }
 
 static void refresh_lights(void) {
@@ -702,72 +489,41 @@ static void refresh_lights(void) {
         close_rgb_device(true);
         return;
     }
-    slot_status_t statuses[9];
+    slot_status_t status;
     if (test_override_until > time(NULL)) {
-        memcpy(statuses, test_statuses, sizeof(statuses));
+        status = test_status;
     } else {
         if (test_override_until != 0) {
             test_override_until = 0;
         }
-        collect_statuses(statuses);
+        status = aggregate_watched_status();
     }
-    apply_slot_colors(statuses);
+    apply_status_color(status);
 }
 
 static bool working_animation_is_visible(void) {
     if (!task_lights_enabled || rgb_device == NULL) {
         return false;
     }
-    slot_status_t statuses[9];
+    slot_status_t status;
     if (test_override_until > time(NULL)) {
-        memcpy(statuses, test_statuses, sizeof(statuses));
+        status = test_status;
     } else {
-        collect_statuses(statuses);
+        status = aggregate_watched_status();
     }
-    if (rgb_protocol == RGB_PROTOCOL_QMK_VIA ||
-        lighting_mode == LIGHTING_WHOLE_BOARD) {
-        return aggregate_status(statuses) == SLOT_WORKING;
-    }
-    for (int index = 0; index < 9; index++) {
-        if (statuses[index] == SLOT_WORKING) {
-            return true;
-        }
-    }
-    return false;
+    return status == SLOT_WORKING;
 }
 
-static bool write_atomic_slot_file(const char *path, int slot, int value) {
+static bool write_atomic_test_request(slot_status_t status) {
     char temporary_path[PATH_MAX];
     snprintf(temporary_path, sizeof(temporary_path), "%s.%ld.tmp",
-             path, (long)getpid());
+             test_request_path, (long)getpid());
     FILE *file = fopen(temporary_path, "w");
     if (file == NULL) {
         return false;
     }
-    fprintf(file, "%d\t%d\t%lld\n", slot, value, (long long)time(NULL));
-    if (fclose(file) != 0 || rename(temporary_path, path) != 0) {
-        unlink(temporary_path);
-        return false;
-    }
-    return true;
-}
-
-static bool save_state(void) {
-    char temporary_path[PATH_MAX];
-    snprintf(temporary_path, sizeof(temporary_path), "%s.tmp", slot_state_path);
-    FILE *file = fopen(temporary_path, "w");
-    if (file == NULL) {
-        return false;
-    }
-    for (size_t index = 0; index < watched_count; index++) {
-        watched_thread_t *item = &watched[index];
-        if (item->slot > 0) {
-            fprintf(file, "%d\t%d\t%lld\t%s\t%s\n", item->slot,
-                    (int)item->status, (long long)item->touched_at,
-                    item->thread_id, item->title);
-        }
-    }
-    if (fclose(file) != 0 || rename(temporary_path, slot_state_path) != 0) {
+    fprintf(file, "%d\n", (int)status);
+    if (fclose(file) != 0 || rename(temporary_path, test_request_path) != 0) {
         unlink(temporary_path);
         return false;
     }
@@ -792,18 +548,14 @@ static void update_thread_status(watched_thread_t *item, slot_status_t status) {
 
     char message[512];
     const char *status_name = status == SLOT_WORKING ? "working" :
-                              status == SLOT_UNREAD ? "unread" :
+                              status == SLOT_COMPLETE ? "complete" :
                               status == SLOT_IDLE ? "idle" :
                               status == SLOT_WAITING ? "waiting" :
                               status == SLOT_ERROR ? "error" : "off";
-    snprintf(message, sizeof(message), "Task%s -> %s: %s",
-             item->slot > 0 ? " in a visible shortcut slot" : "",
+    snprintf(message, sizeof(message), "Task -> %s: %s",
              status_name, item->title[0] != '\0' ? item->title : item->thread_id);
     log_line("TASK", message);
-    if (item->slot > 0) {
-        save_state();
-        refresh_lights();
-    }
+    refresh_lights();
 }
 
 static slot_status_t status_from_line(const char *line, bool *matched) {
@@ -814,7 +566,7 @@ static slot_status_t status_from_line(const char *line, bool *matched) {
     }
     if (strstr(line,
                "\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\"") != NULL) {
-        return SLOT_UNREAD;
+        return SLOT_COMPLETE;
     }
     if (strstr(line,
                "\"type\":\"event_msg\",\"payload\":{\"type\":\"request_user_input\"") != NULL ||
@@ -882,11 +634,14 @@ static void initialize_rollout_position(watched_thread_t *item) {
     item->initialized = true;
     fclose(file);
 
+    bool recent_completion =
+        difftime(time(NULL), file_info.st_mtime) <= COMPLETE_HOLD_SECONDS;
     if (recently_updated && saw_event &&
         (last_status == SLOT_WORKING || last_status == SLOT_WAITING ||
-         last_status == SLOT_UNREAD || last_status == SLOT_ERROR)) {
+         last_status == SLOT_ERROR ||
+         (last_status == SLOT_COMPLETE && recent_completion))) {
         item->status = last_status;
-        item->touched_at = time(NULL);
+        item->touched_at = file_info.st_mtime;
     }
 }
 
@@ -932,14 +687,13 @@ static void discover_threads(sqlite3 *database) {
         return;
     }
 
-    int previous_slots[MAX_THREADS];
     size_t previous_count = watched_count;
+    bool previous_active[MAX_THREADS];
     for (size_t index = 0; index < watched_count; index++) {
-        previous_slots[index] = watched[index].slot;
-        watched[index].slot = 0;
+        previous_active[index] = watched[index].active;
+        watched[index].active = false;
     }
 
-    int visible_position = 0;
     while (sqlite3_step(statement) == SQLITE_ROW) {
         const char *thread_id = (const char *)sqlite3_column_text(statement, 0);
         const char *path = (const char *)sqlite3_column_text(statement, 1);
@@ -961,20 +715,16 @@ static void discover_threads(sqlite3 *database) {
             sanitize_title(item->title);
             initialize_rollout_position(item);
         }
-        visible_position++;
-        if (visible_position <= 9) {
-            item->slot = visible_position;
-        }
+        item->active = true;
     }
     sqlite3_finalize(statement);
 
-    bool slots_changed = watched_count != previous_count;
-    for (size_t index = 0; !slots_changed && index < watched_count; index++) {
-        int previous = index < previous_count ? previous_slots[index] : 0;
-        slots_changed = watched[index].slot != previous;
+    bool active_changed = watched_count != previous_count;
+    for (size_t index = 0; !active_changed && index < watched_count; index++) {
+        bool previous = index < previous_count ? previous_active[index] : false;
+        active_changed = watched[index].active != previous;
     }
-    if (slots_changed) {
-        save_state();
+    if (active_changed) {
         refresh_lights();
     }
 }
@@ -997,10 +747,30 @@ static bool file_changed(const char *path, struct timespec *last_mtime) {
     return true;
 }
 
-static bool load_lighting_mode(void) {
-    FILE *file = fopen(lighting_mode_path, "r");
+static const char *color_scheme_identifier(color_scheme_t scheme) {
+    static const char *identifiers[COLOR_SCHEME_COUNT] = {
+        [COLOR_SCHEME_CODEX] = "codex",
+        [COLOR_SCHEME_OCEAN] = "ocean",
+        [COLOR_SCHEME_VIOLET] = "violet",
+        [COLOR_SCHEME_SUNSET] = "sunset",
+    };
+    return identifiers[scheme];
+}
+
+static bool parse_color_scheme(const char *value, color_scheme_t *scheme) {
+    for (int index = 0; index < COLOR_SCHEME_COUNT; index++) {
+        if (strcmp(value, color_scheme_identifier((color_scheme_t)index)) == 0) {
+            *scheme = (color_scheme_t)index;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool load_color_scheme(void) {
+    FILE *file = fopen(color_scheme_path, "r");
     if (file == NULL) {
-        lighting_mode = LIGHTING_PER_KEY;
+        color_scheme = COLOR_SCHEME_CODEX;
         return errno == ENOENT;
     }
     char value[32] = {0};
@@ -1010,31 +780,23 @@ static bool load_lighting_mode(void) {
         return false;
     }
     value[strcspn(value, "\r\n")] = '\0';
-    if (strcmp(value, "per-key") == 0) {
-        lighting_mode = LIGHTING_PER_KEY;
-    } else if (strcmp(value, "whole-board") == 0) {
-        lighting_mode = LIGHTING_WHOLE_BOARD;
-    } else {
-        return false;
-    }
-    return true;
+    return parse_color_scheme(value, &color_scheme);
 }
 
-static bool save_lighting_mode(lighting_mode_t mode) {
+static bool save_color_scheme(color_scheme_t scheme) {
     char temporary_path[PATH_MAX];
     snprintf(temporary_path, sizeof(temporary_path), "%s.%ld.tmp",
-             lighting_mode_path, (long)getpid());
+             color_scheme_path, (long)getpid());
     FILE *file = fopen(temporary_path, "w");
     if (file == NULL) {
         return false;
     }
-    const char *value = mode == LIGHTING_WHOLE_BOARD ? "whole-board" : "per-key";
-    fprintf(file, "%s\n", value);
-    if (fclose(file) != 0 || rename(temporary_path, lighting_mode_path) != 0) {
+    fprintf(file, "%s\n", color_scheme_identifier(scheme));
+    if (fclose(file) != 0 || rename(temporary_path, color_scheme_path) != 0) {
         unlink(temporary_path);
         return false;
     }
-    lighting_mode = mode;
+    color_scheme = scheme;
     return true;
 }
 
@@ -1079,23 +841,6 @@ static bool save_task_lights_enabled(bool enabled) {
     return true;
 }
 
-static void process_lighting_mode(struct timespec *last_mtime) {
-    if (!file_changed(lighting_mode_path, last_mtime)) {
-        return;
-    }
-    lighting_mode_t previous = lighting_mode;
-    if (!load_lighting_mode()) {
-        log_line("ERROR", "Ignoring an invalid lighting-mode setting.");
-        return;
-    }
-    if (lighting_mode != previous) {
-        log_line("MODE", lighting_mode == LIGHTING_WHOLE_BOARD
-                             ? "Whole-keyboard traffic-light mode enabled."
-                             : "Per-task number-key mode enabled.");
-        refresh_lights();
-    }
-}
-
 static void process_task_lights_enabled(struct timespec *last_mtime) {
     if (!file_changed(task_lights_enabled_path, last_mtime)) {
         return;
@@ -1114,26 +859,18 @@ static void process_task_lights_enabled(struct timespec *last_mtime) {
     refresh_lights();
 }
 
-static void process_selected_slot(struct timespec *last_mtime) {
-    if (!file_changed(selected_slot_path, last_mtime)) {
+static void process_color_scheme(struct timespec *last_mtime) {
+    if (!file_changed(color_scheme_path, last_mtime)) {
         return;
     }
-    FILE *file = fopen(selected_slot_path, "r");
-    int slot = 0;
-    if (file != NULL) {
-        (void)fscanf(file, "%d", &slot);
-        fclose(file);
-    }
-    if (slot < 1 || slot > 9) {
+    color_scheme_t previous = color_scheme;
+    if (!load_color_scheme()) {
+        log_line("ERROR", "Ignoring an invalid color-scheme setting.");
         return;
     }
-    for (size_t index = 0; index < watched_count; index++) {
-        watched_thread_t *item = &watched[index];
-        if (item->slot == slot &&
-            (item->status == SLOT_UNREAD || item->status == SLOT_ERROR)) {
-            update_thread_status(item, SLOT_IDLE);
-            return;
-        }
+    if (color_scheme != previous) {
+        log_line("MODE", "Whole-board color scheme changed.");
+        refresh_lights();
     }
 }
 
@@ -1142,26 +879,39 @@ static void process_test_request(struct timespec *last_mtime) {
         return;
     }
     FILE *file = fopen(test_request_path, "r");
-    int slot = 0;
     int status = SLOT_OFF;
     if (file != NULL) {
-        (void)fscanf(file, "%d\t%d", &slot, &status);
+        (void)fscanf(file, "%d", &status);
         fclose(file);
         (void)unlink(test_request_path);
     }
-    if (slot < 1 || slot > 9 || status < SLOT_OFF || status > SLOT_ERROR) {
+    if (status < SLOT_OFF || status > SLOT_ERROR) {
         return;
     }
-    for (int index = 0; index < 9; index++) {
-        test_statuses[index] = SLOT_OFF;
-    }
-    test_statuses[slot - 1] = (slot_status_t)status;
+    test_status = (slot_status_t)status;
     test_override_until = time(NULL) + 30;
     if (status == SLOT_WORKING) {
         working_breath_frame = 0;
     }
     log_line("TEST", "Showing the requested status color for 30 seconds.");
     refresh_lights();
+}
+
+static void expire_completion_indicators(void) {
+    time_t now = time(NULL);
+    bool changed = false;
+    for (size_t index = 0; index < watched_count; index++) {
+        watched_thread_t *item = &watched[index];
+        if (item->active && item->status == SLOT_COMPLETE &&
+            difftime(now, item->touched_at) >= COMPLETE_HOLD_SECONDS) {
+            item->status = SLOT_IDLE;
+            changed = true;
+        }
+    }
+    if (changed) {
+        log_line("TASK", "Completion indication expired; returning to idle.");
+        refresh_lights();
+    }
 }
 
 static int run_daemon(void) {
@@ -1188,23 +938,20 @@ static int run_daemon(void) {
 
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
-    if (!load_lighting_mode()) {
-        log_line("ERROR", "Unable to read the saved lighting mode; using per-key mode.");
-        lighting_mode = LIGHTING_PER_KEY;
-    }
     if (!load_task_lights_enabled()) {
         log_line("ERROR", "Unable to read the saved task-light state; enabling it.");
         task_lights_enabled = true;
     }
-    log_line("READY",
-             "Watching Codex tasks. Use Codex native Command+1...9 to switch tasks.");
-    save_state();
+    if (!load_color_scheme()) {
+        log_line("ERROR", "Unable to read the color scheme; using Codex colors.");
+        color_scheme = COLOR_SCHEME_CODEX;
+    }
+    log_line("READY", "Watching Codex task status for whole-board lighting.");
     refresh_lights();
 
     unsigned int ticks = 0;
-    struct timespec mode_mtime = {0, 0};
     struct timespec enabled_mtime = {0, 0};
-    struct timespec selected_mtime = {0, 0};
+    struct timespec scheme_mtime = {0, 0};
     struct timespec test_mtime = {0, 0};
     while (!should_stop) {
         if (ticks % 20 == 0) {
@@ -1214,12 +961,14 @@ static int run_daemon(void) {
             }
         }
         for (size_t index = 0; index < watched_count; index++) {
-            process_appended_events(&watched[index]);
+            if (watched[index].active) {
+                process_appended_events(&watched[index]);
+            }
         }
-        process_lighting_mode(&mode_mtime);
         process_task_lights_enabled(&enabled_mtime);
-        process_selected_slot(&selected_mtime);
+        process_color_scheme(&scheme_mtime);
         process_test_request(&test_mtime);
+        expire_completion_indicators();
         if (test_override_until != 0 && test_override_until <= time(NULL)) {
             test_override_until = 0;
             refresh_lights();
@@ -1231,8 +980,7 @@ static int run_daemon(void) {
         } else {
             working_breath_frame = 0;
         }
-        (void)refresh_direct_mode();
-        usleep(DIRECT_REFRESH_INTERVAL_US);
+        usleep(DAEMON_TICK_INTERVAL_US);
         ticks++;
     }
 
@@ -1244,41 +992,9 @@ static int run_daemon(void) {
     return 0;
 }
 
-static int test_key(int slot, slot_status_t status) {
-    if (slot < 1 || slot > 9) {
-        fputs("Slot must be 1 through 9.\n", stderr);
-        return 2;
-    }
-    slot_status_t statuses[9] = {SLOT_OFF, SLOT_OFF, SLOT_OFF, SLOT_OFF, SLOT_OFF,
-                                 SLOT_OFF, SLOT_OFF, SLOT_OFF, SLOT_OFF};
-    statuses[slot - 1] = status;
-    return apply_slot_colors(statuses) ? 0 : 1;
-}
-
-static int launch_light_service(void) {
-    uid_t user_id = getuid();
-    struct passwd *account = getpwuid(user_id);
-    if (account == NULL || account->pw_dir == NULL) {
-        fputs("Unable to resolve the current user.\n", stderr);
-        return 1;
-    }
-
-    char home_argument[PATH_MAX + 6];
-    char uid_argument[64];
-    if (snprintf(home_argument, sizeof(home_argument), "HOME=%s",
-                 account->pw_dir) >= (int)sizeof(home_argument) ||
-        snprintf(uid_argument, sizeof(uid_argument), "FEKER_USER_UID=%u",
-                 (unsigned int)user_id) >= (int)sizeof(uid_argument)) {
-        fputs("The current user identity is too long.\n", stderr);
-        return 1;
-    }
-
-    execl("/usr/bin/sudo", "sudo", "-n", "/usr/bin/env",
-          home_argument, uid_argument,
-          "/Library/PrivilegedHelperTools/com.chenzixin.feker-codex-bridge",
-          "--daemon", (char *)NULL);
-    fprintf(stderr, "Unable to launch the light service: %s\n", strerror(errno));
-    return 1;
+static int test_status_color(slot_status_t status) {
+    (void)load_color_scheme();
+    return apply_status_color(status) ? 0 : 1;
 }
 
 #ifdef __OBJC__
@@ -1319,27 +1035,12 @@ static NSImage *task_light_menu_icon(bool enabled) {
     return image;
 }
 
-static bool evision_device_present(void) {
-    struct hid_device_info *devices = hid_enumerate(FEKER_VID, FEKER_PID);
-    bool found = false;
-    for (struct hid_device_info *item = devices; item != NULL;
-         item = item->next) {
-        if (item->usage_page == FEKER_USAGE_PAGE && item->usage == FEKER_USAGE) {
-            found = true;
-            break;
-        }
-    }
-    hid_free_enumeration(devices);
-    return found;
-}
-
 @interface BridgeMenuController : NSObject <NSMenuDelegate> {
     NSStatusItem *status_item;
     NSMenu *status_menu;
     NSMenuItem *toggle_item;
     NSMenuItem *device_item;
-    NSMenuItem *per_key_item;
-    NSMenuItem *whole_board_item;
+    NSMenuItem *scheme_items[COLOR_SCHEME_COUNT];
     NSMenuItem *test_menu_item;
     NSMenuItem *login_at_startup_item;
 }
@@ -1372,32 +1073,37 @@ static bool evision_device_present(void) {
     [status_menu addItem:device_item];
     [status_menu addItem:[NSMenuItem separatorItem]];
 
-    NSMenuItem *mode_menu_item = [[NSMenuItem alloc]
-        initWithTitle:@"显示方式" action:nil keyEquivalent:@""];
-    NSMenu *mode_menu = [[NSMenu alloc] initWithTitle:@"显示方式"];
-    per_key_item = [[NSMenuItem alloc]
-        initWithTitle:@"数字键任务灯 — 1–9 对应任务" action:@selector(choosePerKey:)
-        keyEquivalent:@""];
-    per_key_item.target = self;
-    [mode_menu addItem:per_key_item];
-
-    whole_board_item = [[NSMenuItem alloc]
-        initWithTitle:@"整板状态灯 — 显示最高优先级" action:@selector(chooseWholeBoard:)
-        keyEquivalent:@""];
-    whole_board_item.target = self;
-    [mode_menu addItem:whole_board_item];
-    mode_menu_item.submenu = mode_menu;
-    [status_menu addItem:mode_menu_item];
+    NSMenuItem *scheme_menu_item = [[NSMenuItem alloc]
+        initWithTitle:@"配色方案" action:nil keyEquivalent:@""];
+    NSMenu *scheme_menu = [[NSMenu alloc] initWithTitle:@"配色方案"];
+    NSArray<NSString *> *scheme_names = @[
+        @"Codex 默认",
+        @"海洋 Ocean",
+        @"紫罗兰 Violet",
+        @"日落 Sunset",
+    ];
+    for (NSInteger index = 0; index < COLOR_SCHEME_COUNT; index++) {
+        NSMenuItem *item = [[NSMenuItem alloc]
+            initWithTitle:scheme_names[index]
+                   action:@selector(chooseColorScheme:)
+            keyEquivalent:@""];
+        item.target = self;
+        item.tag = index;
+        scheme_items[index] = item;
+        [scheme_menu addItem:item];
+    }
+    scheme_menu_item.submenu = scheme_menu;
+    [status_menu addItem:scheme_menu_item];
 
     test_menu_item = [[NSMenuItem alloc]
         initWithTitle:@"测试灯光" action:nil keyEquivalent:@""];
     NSMenu *test_menu = [[NSMenu alloc] initWithTitle:@"测试灯光"];
     NSArray<NSArray *> *tests = @[
-        @[@"🔵  执行中（蓝色呼吸）", @(SLOT_WORKING)],
-        @[@"🟢  完成未读", @(SLOT_UNREAD)],
-        @[@"🟠  等待操作", @(SLOT_WAITING)],
-        @[@"🔴  出错", @(SLOT_ERROR)],
-        @[@"⚪️  空闲", @(SLOT_IDLE)],
+        @[@"执行中（呼吸效果）", @(SLOT_WORKING)],
+        @[@"任务完成", @(SLOT_COMPLETE)],
+        @[@"等待操作", @(SLOT_WAITING)],
+        @[@"出错", @(SLOT_ERROR)],
+        @[@"空闲", @(SLOT_IDLE)],
         @[@"熄灭测试灯", @(SLOT_OFF)],
     ];
     for (NSArray *test in tests) {
@@ -1416,7 +1122,6 @@ static bool evision_device_present(void) {
     NSArray<NSString *> *instructions = @[
         @"左键或右键图标：打开菜单",
         @"菜单第一项：开启或暂停任务灯",
-        @"Command + 1…9：切换 Codex 任务",
     ];
     for (NSString *instruction in instructions) {
         NSMenuItem *item = [[NSMenuItem alloc]
@@ -1426,11 +1131,11 @@ static bool evision_device_present(void) {
     }
     [help_menu addItem:[NSMenuItem separatorItem]];
     NSArray<NSString *> *color_help = @[
-        @"🔵  蓝色呼吸 — Codex 正在工作",
-        @"🟢  完成未读 — 等你切回查看",
-        @"🟠  等待操作 — 需要输入或批准",
-        @"🔴  出错 — 任务执行失败",
-        @"⚪️  空闲 — 已查看或暂无操作",
+        @"执行中 — 当前配色的工作色呼吸",
+        @"任务完成 — 完成色显示 10 秒",
+        @"等待操作 — 需要输入或批准",
+        @"出错 — 任务执行失败",
+        @"空闲 — 当前没有进行中的工作",
     ];
     for (NSString *explanation in color_help) {
         NSMenuItem *item = [[NSMenuItem alloc]
@@ -1456,11 +1161,6 @@ static bool evision_device_present(void) {
     login_at_startup_item.target = self;
     [settings_menu addItem:login_at_startup_item];
     [settings_menu addItem:[NSMenuItem separatorItem]];
-    NSMenuItem *open_permission = [[NSMenuItem alloc]
-        initWithTitle:@"输入监控权限…" action:@selector(openInputMonitoring:)
-        keyEquivalent:@""];
-    open_permission.target = self;
-    [settings_menu addItem:open_permission];
     NSMenuItem *open_login_items = [[NSMenuItem alloc]
         initWithTitle:@"打开系统登录项设置…" action:@selector(openLoginItems:)
         keyEquivalent:@""];
@@ -1483,8 +1183,8 @@ static bool evision_device_present(void) {
     [status_menu addItem:quit_item];
 
     status_item.menu = status_menu;
-    (void)load_lighting_mode();
     (void)load_task_lights_enabled();
+    (void)load_color_scheme();
     [self updateAppearance];
     if (getenv("FEKER_SHOW_MENU_ON_START") != NULL) {
         [self performSelector:@selector(showStatusMenuForTesting)
@@ -1512,7 +1212,7 @@ static bool evision_device_present(void) {
 
 - (void)runMenuActionSelfTest {
     bool original_enabled = task_lights_enabled;
-    lighting_mode_t original_mode = lighting_mode;
+    color_scheme_t original_scheme = color_scheme;
     log_line("UI-TEST", "Starting menu action regression test.");
 
     [NSApp sendAction:toggle_item.action
@@ -1523,11 +1223,12 @@ static bool evision_device_present(void) {
         (void)save_task_lights_enabled(original_enabled);
     }
 
-    [NSApp sendAction:per_key_item.action
-                   to:per_key_item.target from:per_key_item];
-    [NSApp sendAction:whole_board_item.action
-                   to:whole_board_item.target from:whole_board_item];
-    (void)save_lighting_mode(original_mode);
+    for (NSInteger index = 0; index < COLOR_SCHEME_COUNT; index++) {
+        [NSApp sendAction:scheme_items[index].action
+                       to:scheme_items[index].target
+                     from:scheme_items[index]];
+    }
+    (void)save_color_scheme(original_scheme);
     [self updateAppearance];
 
     NSMenuItem *off_test = [test_menu_item.submenu itemAtIndex:5];
@@ -1551,11 +1252,11 @@ static bool evision_device_present(void) {
     toggle_item.state = task_lights_enabled ? NSControlStateValueOn
                                             : NSControlStateValueOff;
     test_menu_item.enabled = task_lights_enabled;
-    per_key_item.state =
-        lighting_mode == LIGHTING_PER_KEY ? NSControlStateValueOn : NSControlStateValueOff;
-    whole_board_item.state =
-        lighting_mode == LIGHTING_WHOLE_BOARD ? NSControlStateValueOn
-                                              : NSControlStateValueOff;
+    for (NSInteger index = 0; index < COLOR_SCHEME_COUNT; index++) {
+        scheme_items[index].state =
+            (NSInteger)color_scheme == index ? NSControlStateValueOn
+                                             : NSControlStateValueOff;
+    }
     status_item.button.image = task_light_menu_icon(task_lights_enabled);
     status_item.button.toolTip = task_lights_enabled
                                      ? @"FEKER 任务灯已开启 · 点击打开菜单"
@@ -1576,11 +1277,7 @@ static bool evision_device_present(void) {
     }
 
     if (qmk_device_present()) {
-        device_item.title = @"新款 FEKER · 自动使用整板状态色";
-    } else if (evision_device_present()) {
-        device_item.title = lighting_mode == LIGHTING_PER_KEY
-                                ? @"旧款 FEKER · 数字键逐灯显示"
-                                : @"旧款 FEKER · 整板状态色";
+        device_item.title = @"FEKER QMK/VIA · 整板状态灯";
     } else {
         device_item.title = @"未检测到兼容的有线键盘";
     }
@@ -1589,8 +1286,8 @@ static bool evision_device_present(void) {
 - (void)menuWillOpen:(NSMenu *)menu {
     (void)menu;
     log_line("UI", "Status menu opened.");
-    (void)load_lighting_mode();
     (void)load_task_lights_enabled();
+    (void)load_color_scheme();
     [self updateAppearance];
 }
 
@@ -1605,27 +1302,21 @@ static bool evision_device_present(void) {
     [self updateAppearance];
 }
 
-- (void)choosePerKey:(id)sender {
-    (void)sender;
-    log_line("UI", "Menu action: number-key task-light mode.");
-    if (!save_lighting_mode(LIGHTING_PER_KEY)) {
-        log_line("ERROR", "Unable to save per-key lighting mode.");
+- (void)chooseColorScheme:(NSMenuItem *)sender {
+    color_scheme_t selected = (color_scheme_t)sender.tag;
+    if (selected < 0 || selected >= COLOR_SCHEME_COUNT) {
+        return;
     }
-    [self updateAppearance];
-}
-
-- (void)chooseWholeBoard:(id)sender {
-    (void)sender;
-    log_line("UI", "Menu action: whole-keyboard status mode.");
-    if (!save_lighting_mode(LIGHTING_WHOLE_BOARD)) {
-        log_line("ERROR", "Unable to save whole-keyboard lighting mode.");
+    log_line("UI", "Menu action: change whole-board color scheme.");
+    if (!save_color_scheme(selected)) {
+        log_line("ERROR", "Unable to save the color scheme.");
     }
     [self updateAppearance];
 }
 
 - (void)testStatus:(NSMenuItem *)sender {
     log_line("UI", "Menu action: run a lighting test.");
-    if (!write_atomic_slot_file(test_request_path, 1, (int)sender.tag)) {
+    if (!write_atomic_test_request((slot_status_t)sender.tag)) {
         log_line("ERROR", "Unable to send the lighting test request.");
     }
 }
@@ -1635,15 +1326,6 @@ static bool evision_device_present(void) {
     NSString *path = [NSHomeDirectory()
         stringByAppendingPathComponent:@"Library/Logs/FekerCodexBridge.log"];
     [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:path]];
-}
-
-- (void)openInputMonitoring:(id)sender {
-    (void)sender;
-    NSURL *url = [NSURL
-        URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"];
-    if (url != nil) {
-        [[NSWorkspace sharedWorkspace] openURL:url];
-    }
 }
 
 - (void)openLoginItems:(id)sender {
@@ -1736,121 +1418,6 @@ static void setup_menu_bar_ui(void) {
                               forMode:NSRunLoopCommonModes];
 }
 
-static int slot_for_keycode(CGKeyCode keycode) {
-    switch (keycode) {
-        case 18: return 1;
-        case 19: return 2;
-        case 20: return 3;
-        case 21: return 4;
-        case 23: return 5;
-        case 22: return 6;
-        case 26: return 7;
-        case 28: return 8;
-        case 25: return 9;
-        default: return 0;
-    }
-}
-
-static CGEventRef shortcut_event_callback(CGEventTapProxy proxy, CGEventType type,
-                                          CGEventRef event, void *context) {
-    (void)proxy;
-    (void)context;
-    if (type != kCGEventKeyDown) {
-        return event;
-    }
-    CGEventFlags flags = CGEventGetFlags(event);
-    if ((flags & kCGEventFlagMaskCommand) == 0 ||
-        (flags & (kCGEventFlagMaskControl | kCGEventFlagMaskAlternate)) != 0) {
-        return event;
-    }
-    int slot = slot_for_keycode(
-        (CGKeyCode)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode));
-    if (slot == 0) {
-        return event;
-    }
-
-    NSRunningApplication *frontmost =
-        [[NSWorkspace sharedWorkspace] frontmostApplication];
-    if (![[frontmost bundleIdentifier] isEqualToString:@"com.openai.codex"]) {
-        return event;
-    }
-    if (!write_atomic_slot_file(selected_slot_path, slot, 0)) {
-        log_line("ERROR", "Unable to save the selected Codex shortcut slot.");
-    }
-    return event;
-}
-
-static void observer_timer_callback(CFRunLoopTimerRef timer, void *info) {
-    (void)timer;
-    (void)info;
-    if (should_stop) {
-        CFRunLoopStop(CFRunLoopGetCurrent());
-    }
-}
-
-static int run_shortcut_observer(void) {
-    char lock_path[PATH_MAX];
-    snprintf(lock_path, sizeof(lock_path), "%s/observer.lock", app_support_dir);
-    int lock_fd = open(lock_path, O_CREAT | O_RDWR, 0644);
-    if (lock_fd < 0 || flock(lock_fd, LOCK_EX | LOCK_NB) != 0) {
-        log_line("INFO", "Codex shortcut observer is already running.");
-        if (lock_fd >= 0) {
-            close(lock_fd);
-        }
-        return 0;
-    }
-
-    signal(SIGINT, handle_signal);
-    signal(SIGTERM, handle_signal);
-    bool access_requested = false;
-    CFMachPortRef tap = NULL;
-    while (!should_stop && tap == NULL) {
-        if (!CGPreflightListenEventAccess()) {
-            if (!access_requested) {
-                log_line("PERMISSION",
-                         "Input Monitoring is required only to observe Codex "
-                         "task-switch shortcuts.");
-                (void)CGRequestListenEventAccess();
-                access_requested = true;
-            }
-        } else {
-            tap = CGEventTapCreate(
-                kCGSessionEventTap, kCGHeadInsertEventTap,
-                kCGEventTapOptionListenOnly, CGEventMaskBit(kCGEventKeyDown),
-                shortcut_event_callback, NULL);
-        }
-        if (tap == NULL) {
-            (void)CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.0, true);
-        }
-    }
-    if (tap == NULL) {
-        flock(lock_fd, LOCK_UN);
-        close(lock_fd);
-        return 0;
-    }
-
-    CFRunLoopSourceRef source =
-        CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0);
-    CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
-    CFRunLoopTimerRef timer = CFRunLoopTimerCreate(
-        kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + 0.5, 0.5, 0, 0,
-        observer_timer_callback, NULL);
-    CFRunLoopAddTimer(CFRunLoopGetCurrent(), timer, kCFRunLoopCommonModes);
-    CGEventTapEnable(tap, true);
-    log_line("READY",
-             "Passively observing native Codex Command+1...9 shortcuts.");
-    CFRunLoopRun();
-
-    CFRunLoopRemoveTimer(CFRunLoopGetCurrent(), timer, kCFRunLoopCommonModes);
-    CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
-    CFRelease(timer);
-    CFRelease(source);
-    CFRelease(tap);
-    flock(lock_fd, LOCK_UN);
-    close(lock_fd);
-    return 0;
-}
-
 static void stop_light_service(pid_t child_pid) {
     if (child_pid <= 0) {
         return;
@@ -1867,36 +1434,8 @@ static void stop_light_service(pid_t child_pid) {
     (void)waitpid(child_pid, NULL, 0);
 }
 
-static pid_t launch_shortcut_observer_process(void) {
-    pid_t child_pid = fork();
-    if (child_pid < 0) {
-        fprintf(stderr, "Unable to start the shortcut observer: %s\n",
-                strerror(errno));
-        return -1;
-    }
-    if (child_pid == 0) {
-        if (setpgid(0, 0) != 0) {
-            fprintf(stderr, "Unable to isolate the shortcut observer: %s\n",
-                    strerror(errno));
-            _exit(1);
-        }
-        execl(executable_path, executable_path, "--observer", (char *)NULL);
-        fprintf(stderr, "Unable to launch the shortcut observer: %s\n",
-                strerror(errno));
-        _exit(1);
-    }
-    if (setpgid(child_pid, child_pid) != 0 && errno != EACCES) {
-        log_line("ERROR", "Unable to supervise the shortcut observer process group.");
-        (void)kill(child_pid, SIGTERM);
-        (void)waitpid(child_pid, NULL, 0);
-        return -1;
-    }
-    return child_pid;
-}
-
 static int run_agent(void) {
     configure_background_logging();
-    bool use_unprivileged_qmk_service = qmk_device_present();
     pid_t child_pid = fork();
     if (child_pid < 0) {
         fprintf(stderr, "Unable to start the light service: %s\n", strerror(errno));
@@ -1907,13 +1446,10 @@ static int run_agent(void) {
             fprintf(stderr, "Unable to isolate the light service: %s\n", strerror(errno));
             _exit(1);
         }
-        if (use_unprivileged_qmk_service) {
-            execl(executable_path, executable_path, "--daemon", (char *)NULL);
-            fprintf(stderr, "Unable to launch the QMK light service: %s\n",
-                    strerror(errno));
-            _exit(1);
-        }
-        _exit(launch_light_service());
+        execl(executable_path, executable_path, "--daemon", (char *)NULL);
+        fprintf(stderr, "Unable to launch the QMK light service: %s\n",
+                strerror(errno));
+        _exit(1);
     }
     if (setpgid(child_pid, child_pid) != 0 && errno != EACCES) {
         log_line("ERROR", "Unable to supervise the light-service process group.");
@@ -1922,13 +1458,9 @@ static int run_agent(void) {
         return 1;
     }
 
-    pid_t observer_pid = launch_shortcut_observer_process();
     setup_menu_bar_ui();
     log_line("READY", "Menu bar UI is accepting mouse input.");
     [NSApp run];
-    if (observer_pid > 0) {
-        stop_light_service(observer_pid);
-    }
     stop_light_service(child_pid);
     return 0;
 }
@@ -1939,23 +1471,19 @@ static void print_usage(const char *program) {
             "Usage:\n"
             "  %s --agent\n"
             "  %s --daemon\n"
-            "  %s --launch-light-service\n"
-            "  %s --observer\n"
             "  %s --task-lights on|off\n"
-            "  %s --mode per-key|whole-board\n"
-            "  %s --select-slot 1-9\n"
-            "  %s --request-test-key 1-9 [working|unread|idle|waiting|error|off]\n"
-            "  %s --test-key 1-9 [working|unread|idle|waiting|error|off]\n"
+            "  %s --scheme codex|ocean|violet|sunset\n"
+            "  %s --request-test [working|complete|idle|waiting|error|off]\n"
+            "  %s --test [working|complete|idle|waiting|error|off]\n"
             "  %s --off\n",
-            program, program, program, program, program, program, program, program,
-            program, program);
+            program, program, program, program, program, program, program);
 }
 
 static bool parse_status(const char *name, slot_status_t *status) {
     if (strcmp(name, "working") == 0 || strcmp(name, "blue") == 0) {
         *status = SLOT_WORKING;
-    } else if (strcmp(name, "unread") == 0 || strcmp(name, "green") == 0) {
-        *status = SLOT_UNREAD;
+    } else if (strcmp(name, "complete") == 0 || strcmp(name, "green") == 0) {
+        *status = SLOT_COMPLETE;
     } else if (strcmp(name, "idle") == 0 || strcmp(name, "white") == 0) {
         *status = SLOT_IDLE;
     } else if (strcmp(name, "waiting") == 0 || strcmp(name, "amber") == 0 ||
@@ -1972,12 +1500,6 @@ static bool parse_status(const char *name, slot_status_t *status) {
 }
 
 int main(int argc, char **argv) {
-    if (argc == 2 && strcmp(argv[1], "--launch-light-service") == 0) {
-        return launch_light_service();
-    }
-    if (!configure_process_identity(argc, argv)) {
-        return 1;
-    }
     if (!initialize_paths()) {
         return 1;
     }
@@ -1991,23 +1513,18 @@ int main(int argc, char **argv) {
 
     int result = 0;
 #ifdef __OBJC__
-    if (argc == 1 && !setuid_installation) {
+    if (argc == 1) {
         @autoreleasepool {
             result = run_agent();
         }
     } else
 #endif
-    if ((argc == 1 && setuid_installation) ||
-        (argc == 2 && strcmp(argv[1], "--daemon") == 0)) {
+    if (argc == 2 && strcmp(argv[1], "--daemon") == 0) {
         result = run_daemon();
 #ifdef __OBJC__
-    } else if (argc == 2 &&
-               (strcmp(argv[1], "--agent") == 0 ||
-                strcmp(argv[1], "--observer") == 0)) {
+    } else if (argc == 2 && strcmp(argv[1], "--agent") == 0) {
         @autoreleasepool {
-            result = strcmp(argv[1], "--agent") == 0
-                         ? run_agent()
-                         : run_shortcut_observer();
+            result = run_agent();
         }
 #endif
     } else if (argc == 3 && strcmp(argv[1], "--task-lights") == 0) {
@@ -2019,46 +1536,34 @@ int main(int argc, char **argv) {
             print_usage(argv[0]);
             result = 2;
         }
-    } else if (argc == 3 && strcmp(argv[1], "--mode") == 0) {
-        lighting_mode_t mode;
-        if (strcmp(argv[2], "per-key") == 0) {
-            mode = LIGHTING_PER_KEY;
-        } else if (strcmp(argv[2], "whole-board") == 0) {
-            mode = LIGHTING_WHOLE_BOARD;
+    } else if (argc == 3 && strcmp(argv[1], "--scheme") == 0) {
+        color_scheme_t scheme;
+        if (!parse_color_scheme(argv[2], &scheme)) {
+            print_usage(argv[0]);
+            result = 2;
         } else {
-            print_usage(argv[0]);
-            result = 2;
-            goto done;
+            result = save_color_scheme(scheme) ? 0 : 1;
         }
-        result = save_lighting_mode(mode) ? 0 : 1;
-    } else if (argc == 3 && strcmp(argv[1], "--select-slot") == 0) {
-        int slot = atoi(argv[2]);
-        result = slot >= 1 && slot <= 9 &&
-                 write_atomic_slot_file(selected_slot_path, slot, 0) ? 0 : 2;
-    } else if ((argc == 3 || argc == 4) &&
-               strcmp(argv[1], "--request-test-key") == 0) {
-        int slot = atoi(argv[2]);
-        slot_status_t status = SLOT_UNREAD;
-        if (argc == 4 && !parse_status(argv[3], &status)) {
+    } else if ((argc == 2 || argc == 3) &&
+               strcmp(argv[1], "--request-test") == 0) {
+        slot_status_t status = SLOT_COMPLETE;
+        if (argc == 3 && !parse_status(argv[2], &status)) {
             print_usage(argv[0]);
             result = 2;
-        } else if (slot < 1 || slot > 9 ||
-                   !write_atomic_slot_file(test_request_path, slot, (int)status)) {
+        } else if (!write_atomic_test_request(status)) {
             fputs("Unable to write the test request.\n", stderr);
             result = 2;
         }
-    } else if ((argc == 3 || argc == 4) && strcmp(argv[1], "--test-key") == 0) {
-        slot_status_t status = SLOT_UNREAD;
-        if (argc == 4 && !parse_status(argv[3], &status)) {
+    } else if ((argc == 2 || argc == 3) && strcmp(argv[1], "--test") == 0) {
+        slot_status_t status = SLOT_COMPLETE;
+        if (argc == 3 && !parse_status(argv[2], &status)) {
             print_usage(argv[0]);
             result = 2;
             goto done;
         }
-        result = test_key(atoi(argv[2]), status);
+        result = test_status_color(status);
     } else if (argc == 2 && strcmp(argv[1], "--off") == 0) {
-        slot_status_t off[9] = {SLOT_OFF, SLOT_OFF, SLOT_OFF, SLOT_OFF, SLOT_OFF,
-                                SLOT_OFF, SLOT_OFF, SLOT_OFF, SLOT_OFF};
-        result = apply_slot_colors(off) ? 0 : 1;
+        result = apply_status_color(SLOT_OFF) ? 0 : 1;
     } else {
         print_usage(argv[0]);
         result = 2;

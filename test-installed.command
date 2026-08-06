@@ -8,7 +8,7 @@ if [[ ! -x "$app_binary" ]]; then
   exit 1
 fi
 
-"$app_binary" --request-test-key 1 unread
-echo "A green test runs for 30 seconds: number 1 in per-key mode, or the whole keyboard in traffic-light mode."
+"$app_binary" --request-test complete
+echo "The whole keyboard shows green for 30 seconds."
 echo "No administrator password is needed."
 read "?Press Return to close…"

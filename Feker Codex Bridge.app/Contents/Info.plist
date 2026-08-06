@@ -15,14 +15,12 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.4.2</string>
+    <string>1.6.0</string>
     <key>CFBundleVersion</key>
-    <string>10</string>
+    <string>12</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSHumanReadableCopyright</key>
-    <string>Experimental local bridge for FEKER Alice80 and Codex.</string>
-    <key>NSInputMonitoringUsageDescription</key>
-    <string>Observes Codex task-switch shortcuts and controls the connected FEKER Alice80 task lights.</string>
+    <string>Whole-board Codex task lights for FEKER QMK/VIA keyboards.</string>
 </dict>
 </plist>
