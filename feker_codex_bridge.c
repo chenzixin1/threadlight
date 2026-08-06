@@ -1531,12 +1531,27 @@ static NSImage *task_light_menu_icon(bool enabled) {
     brightness_slider.action = @selector(brightnessChanged:);
     [content addSubview:brightness_slider];
 
+}
+
+- (void)startSettingsPreviewTimer {
+    [preview_timer invalidate];
     preview_timer = [NSTimer
         timerWithTimeInterval:SETTINGS_PREVIEW_INTERVAL target:self
                      selector:@selector(animateSettingsPreview:)
                      userInfo:nil repeats:YES];
     [[NSRunLoop mainRunLoop] addTimer:preview_timer
                               forMode:NSRunLoopCommonModes];
+}
+
+- (void)stopSettingsPreviewTimer {
+    [preview_timer invalidate];
+    preview_timer = nil;
+}
+
+- (void)windowWillClose:(NSNotification *)notification {
+    if (notification.object == light_settings_window) {
+        [self stopSettingsPreviewTimer];
+    }
 }
 
 - (void)animateSettingsPreview:(NSTimer *)timer {
@@ -1574,6 +1589,7 @@ static NSImage *task_light_menu_icon(bool enabled) {
     brightness_value_label.stringValue =
         [NSString stringWithFormat:@"%u%%", light_brightness_percent];
     preview_started_at = CACurrentMediaTime();
+    [self startSettingsPreviewTimer];
     [NSApp activateIgnoringOtherApps:YES];
     [light_settings_window makeKeyAndOrderFront:nil];
     [self animateSettingsPreview:nil];
@@ -1638,6 +1654,7 @@ static NSImage *task_light_menu_icon(bool enabled) {
     [self brightnessChanged:brightness_slider];
     (void)save_brightness(original_brightness);
     [light_settings_window orderOut:nil];
+    [self stopSettingsPreviewTimer];
     [self updateAppearance];
 
     NSMenuItem *off_test = [test_menu_item.submenu itemAtIndex:5];
