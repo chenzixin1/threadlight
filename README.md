@@ -2,6 +2,10 @@
 
 Use a supported FEKER keyboard as a whole-board Codex status light.
 
+<p align="center">
+  <img src="assets/readme-hero-breathing.gif" alt="FEKER × CODEX — 让任务状态，亮在键盘上。" width="100%">
+</p>
+
 [中文](#中文) · [English](#english)
 
 ---
