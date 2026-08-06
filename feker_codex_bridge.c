@@ -1354,9 +1354,9 @@ static bool evision_device_present(void) {
     }
 
     status_item = [[NSStatusBar systemStatusBar]
-        statusItemWithLength:NSVariableStatusItemLength];
-    status_item.button.title = @" 任务灯";
-    status_item.button.imagePosition = NSImageLeft;
+        statusItemWithLength:NSSquareStatusItemLength];
+    status_item.button.title = @"";
+    status_item.button.imagePosition = NSImageOnly;
 
     status_menu = [[NSMenu alloc] initWithTitle:@"FEKER 任务灯"];
     status_menu.delegate = self;
