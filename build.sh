@@ -8,6 +8,7 @@ cc -x objective-c -std=c11 -Wall -Wextra -Werror \
   "${script_dir}/feker_codex_bridge.c" \
   $(pkg-config --cflags --libs hidapi sqlite3) \
   -framework AppKit \
+  -framework QuartzCore \
   -framework ServiceManagement \
   -o "${app_binary}"
 

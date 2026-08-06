@@ -14,17 +14,16 @@ FEKER Codex Bridge 是一个 macOS 菜单栏应用。它只读监听本机 Codex
 
 | 状态 | 默认 Codex 配色 |
 | --- | --- |
-| 执行中 | 蓝色呼吸，峰值 `#304FFE` |
-| 任务刚完成 | 绿色 `#00FF4C`，显示 10 秒 |
-| 空闲 | 白色 `#FFFFFF` |
-| 等待输入或批准 | 橙色 `#FF6D00` |
-| 出错 | 红色 `#FF0033` |
-| 没有任务 | 熄灭 |
+| 执行中 | 蓝色平滑呼吸，峰值 `#304FFE` |
+| 任务刚完成 | 绿色呼吸两次，然后常亮至下一项任务开始 |
+| 空闲或没有任务 | 恢复键盘原有灯效 |
+| 等待输入或批准 | 橙色慢速呼吸 |
+| 任务失败 | 红色双闪后常亮；用户主动取消不算失败 |
 
 多个任务同时存在时，整板显示优先级最高的状态：
 
 ```text
-出错 > 等待操作 > 执行中 > 刚刚完成 > 空闲 > 无任务
+任务失败 > 等待操作 > 已完成提示 > 执行中 > 空闲
 ```
 
 ## 支持的键盘
@@ -61,16 +60,15 @@ Alice80 键盘本身可以通过 Type-C、2.4GHz 和 Bluetooth 打字，但本�
 
 ## 配色方案
 
-在菜单栏图标中打开“配色方案”，可选择四套整板配色。选择会保存在 `~/Library/Application Support/Feker Codex Bridge/color-scheme.txt`。
+在菜单栏图标或“灯光设置”中选择三套整板配色。选择会保存在 `~/Library/Application Support/Feker Codex Bridge/color-scheme.txt`。
 
-| 方案 | 执行中 | 完成 | 空闲 | 等待 | 出错 |
-| --- | --- | --- | --- | --- | --- |
-| Codex 默认 | `#304FFE` | `#00FF4C` | `#FFFFFF` | `#FF6D00` | `#FF0033` |
-| 海洋 Ocean | `#00B8FF` | `#00E5A8` | `#BDEBFF` | `#FFB000` | `#FF416C` |
-| 紫罗兰 Violet | `#8B5CF6` | `#2DD4BF` | `#F3E8FF` | `#F59E0B` | `#E11D48` |
-| 日落 Sunset | `#FF8A00` | `#84CC16` | `#FFF3D6` | `#FFD000` | `#FF1744` |
+| 方案 | 执行中 | 完成 | 等待 | 失败 |
+| --- | --- | --- | --- | --- |
+| Codex 默认 | `#304FFE` | `#00FF4C` | `#FF6D00` | `#FF0033` |
+| 海洋 Ocean | `#00B8FF` | `#00E5A8` | `#FFB000` | `#FF416C` |
+| 紫罗兰 Violet | `#8B5CF6` | `#2DD4BF` | `#F59E0B` | `#E11D48` |
 
-所有方案的“执行中”颜色都会使用约两秒一轮的呼吸效果；其他状态常亮。
+“灯光设置”只包含配色方案和亮度。状态标签会直接预览执行中呼吸、完成呼吸两次后常亮、等待慢闪以及失败双闪后常亮。亮度范围为 20%–100%，保存在 `brightness.txt`。
 
 ## Codex 设置
 
@@ -119,9 +117,9 @@ cd feker-codex-bridge
 2. 连接 USB-C，按 `Fn + N` 进入有线模式。
 3. 启动 Codex 并运行一个任务。
 4. 点击菜单栏 Logo，确认显示“FEKER QMK/VIA · 整板状态灯”。
-5. 选择配色，或在“测试灯光”中预览状态。
+5. 选择配色；需要时在“灯光设置”调整亮度，或在“测试灯光”中预览状态。
 
-菜单提供：任务灯开关、四套配色、状态测试、日志、开机启动、GitHub 和退出。暂停或退出时，应用会恢复键盘原有灯效。
+菜单提供：任务灯开关、三套配色、灯光设置、状态测试、日志、开机启动、GitHub 和退出。空闲、暂停或退出时，应用会恢复键盘原有灯效。
 
 ## 命令行
 
@@ -133,7 +131,7 @@ app='/Applications/Feker Codex Bridge.app/Contents/MacOS/FekerCodexBridge'
 "$app" --scheme codex
 "$app" --scheme ocean
 "$app" --scheme violet
-"$app" --scheme sunset
+"$app" --brightness 68
 "$app" --request-test working
 "$app" --request-test complete
 ```
@@ -187,17 +185,16 @@ FEKER Codex Bridge is a macOS menu bar app. It reads local Codex task events and
 
 | State | Default Codex colors |
 | --- | --- |
-| Working | Breathing blue, peak `#304FFE` |
-| Just completed | Green `#00FF4C` for 10 seconds |
-| Idle | White `#FFFFFF` |
-| Waiting for input or approval | Amber `#FF6D00` |
-| Error | Red `#FF0033` |
-| No task | Off |
+| Working | Smooth breathing blue, peak `#304FFE` |
+| Just completed | Two green breaths, then solid until the next task starts |
+| Idle or no task | Restores the keyboard's previous RGB effect |
+| Waiting for input or approval | Slow breathing amber |
+| Failed | Two red flashes, then solid; user interruption is not a failure |
 
 When several tasks exist, the board shows the highest-priority state:
 
 ```text
-Error > Waiting > Working > Just completed > Idle > No task
+Failed > Waiting > Completion indication > Working > Idle
 ```
 
 ## Supported keyboard
@@ -234,16 +231,15 @@ Protocol references: [QMK USB endpoint limitations](https://docs.qmk.fm/config_o
 
 ## Color schemes
 
-Open **Color scheme / 配色方案** from the menu bar icon. The selection is saved to `~/Library/Application Support/Feker Codex Bridge/color-scheme.txt`.
+Choose one of three whole-board schemes from the menu bar or **Light settings / 灯光设置**. The selection is saved to `~/Library/Application Support/Feker Codex Bridge/color-scheme.txt`.
 
-| Scheme | Working | Complete | Idle | Waiting | Error |
-| --- | --- | --- | --- | --- | --- |
-| Codex Default | `#304FFE` | `#00FF4C` | `#FFFFFF` | `#FF6D00` | `#FF0033` |
-| Ocean | `#00B8FF` | `#00E5A8` | `#BDEBFF` | `#FFB000` | `#FF416C` |
-| Violet | `#8B5CF6` | `#2DD4BF` | `#F3E8FF` | `#F59E0B` | `#E11D48` |
-| Sunset | `#FF8A00` | `#84CC16` | `#FFF3D6` | `#FFD000` | `#FF1744` |
+| Scheme | Working | Complete | Waiting | Failed |
+| --- | --- | --- | --- | --- |
+| Codex Default | `#304FFE` | `#00FF4C` | `#FF6D00` | `#FF0033` |
+| Ocean | `#00B8FF` | `#00E5A8` | `#FFB000` | `#FF416C` |
+| Violet | `#8B5CF6` | `#2DD4BF` | `#F59E0B` | `#E11D48` |
 
-The working color breathes on a roughly two-second cycle in every scheme. Other states are solid.
+Light settings contain only the scheme and a 20%–100% brightness control. The status cards preview working breath, two completion breaths followed by solid, waiting pulse, and two failure flashes followed by solid. Brightness is saved in `brightness.txt`.
 
 ## Codex setup
 
@@ -286,9 +282,9 @@ You can also double-click `install-service.command` in Finder. It builds the app
 2. Connect USB-C and press `Fn + N` for wired mode.
 3. Start a Codex task.
 4. Click the menu bar logo and confirm **FEKER QMK/VIA · whole-board task light**.
-5. Pick a scheme or preview states under **Test lights / 测试灯光**.
+5. Pick a scheme, adjust brightness under **Light settings / 灯光设置**, or preview states under **Test lights / 测试灯光**.
 
-The menu includes the light toggle, four schemes, state tests, logs, launch at login, GitHub, and Quit. Pausing or quitting restores the keyboard's previous RGB effect.
+The menu includes the light toggle, three schemes, light settings, state tests, logs, launch at login, GitHub, and Quit. Idle, pause, and quit restore the keyboard's previous RGB effect.
 
 ## Command line
 
@@ -300,7 +296,7 @@ app='/Applications/Feker Codex Bridge.app/Contents/MacOS/FekerCodexBridge'
 "$app" --scheme codex
 "$app" --scheme ocean
 "$app" --scheme violet
-"$app" --scheme sunset
+"$app" --brightness 68
 "$app" --request-test working
 "$app" --request-test complete
 ```
