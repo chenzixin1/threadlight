@@ -44,6 +44,7 @@
 #define MAX_COLOR_PAYLOAD 0x36
 #define DIRECT_REFRESH_OFFSET 18
 #define DIRECT_REFRESH_INTERVAL_US 100000
+#define WORKING_BREATH_FRAME_COUNT 20
 #define MAX_THREADS 128
 #define MAX_TITLE 256
 
@@ -118,6 +119,7 @@ static lighting_mode_t lighting_mode = LIGHTING_PER_KEY;
 static bool task_lights_enabled = true;
 static bool setuid_installation = false;
 static uid_t real_user_id = 0;
+static size_t working_breath_frame = 0;
 
 static void handle_signal(int signal_number) {
     (void)signal_number;
@@ -573,16 +575,7 @@ static bool refresh_direct_mode(void) {
     return false;
 }
 
-static bool apply_slot_colors(const slot_status_t statuses[9]) {
-    /* Exact status palette used by Codex Micro in Codex 26.721.31836. */
-    static const rgb_t colors_by_status[] = {
-        [SLOT_OFF] = {0x00, 0x00, 0x00},
-        [SLOT_WORKING] = {0x30, 0x4F, 0xFE},
-        [SLOT_UNREAD] = {0x00, 0xFF, 0x4C},
-        [SLOT_IDLE] = {0xFF, 0xFF, 0xFF},
-        [SLOT_WAITING] = {0xFF, 0x6D, 0x00},
-        [SLOT_ERROR] = {0xFF, 0x00, 0x33},
-    };
+static slot_status_t aggregate_status(const slot_status_t statuses[9]) {
     static const int priority[] = {
         [SLOT_OFF] = 0,
         [SLOT_IDLE] = 1,
@@ -597,13 +590,43 @@ static bool apply_slot_colors(const slot_status_t statuses[9]) {
             aggregate = statuses[index];
         }
     }
+    return aggregate;
+}
+
+static rgb_t color_for_status(slot_status_t status) {
+    /* Exact status palette used by Codex Micro in Codex 26.721.31836. */
+    static const rgb_t colors_by_status[] = {
+        [SLOT_OFF] = {0x00, 0x00, 0x00},
+        [SLOT_WORKING] = {0x30, 0x4F, 0xFE},
+        [SLOT_UNREAD] = {0x00, 0xFF, 0x4C},
+        [SLOT_IDLE] = {0xFF, 0xFF, 0xFF},
+        [SLOT_WAITING] = {0xFF, 0x6D, 0x00},
+        [SLOT_ERROR] = {0xFF, 0x00, 0x33},
+    };
+    rgb_t color = colors_by_status[status];
+    if (status == SLOT_WORKING) {
+        /* A cosine-like two-second pulse, starting at full Codex blue. */
+        static const uint8_t breath_scale[WORKING_BREATH_FRAME_COUNT] = {
+            255, 250, 235, 211, 181, 147, 112, 80, 54, 37,
+            31, 37, 54, 80, 112, 147, 181, 211, 235, 250,
+        };
+        uint8_t scale = breath_scale[working_breath_frame];
+        color.r = (uint8_t)(((uint16_t)color.r * scale + 127) / 255);
+        color.g = (uint8_t)(((uint16_t)color.g * scale + 127) / 255);
+        color.b = (uint8_t)(((uint16_t)color.b * scale + 127) / 255);
+    }
+    return color;
+}
+
+static bool apply_slot_colors(const slot_status_t statuses[9]) {
+    slot_status_t aggregate = aggregate_status(statuses);
 
     if (!ensure_rgb_device()) {
         return false;
     }
     if (rgb_protocol == RGB_PROTOCOL_QMK_VIA) {
         bool ok = capture_qmk_original() &&
-                  apply_qmk_whole_board(colors_by_status[aggregate]);
+                  apply_qmk_whole_board(color_for_status(aggregate));
         if (!ok) {
             log_line("ERROR",
                      "New-generation FEKER did not acknowledge the VIA RGB "
@@ -618,12 +641,13 @@ static bool apply_slot_colors(const slot_status_t statuses[9]) {
     rgb_t led_colors[LED_COUNT];
     if (lighting_mode == LIGHTING_WHOLE_BOARD) {
         for (size_t index = 0; index < LED_COUNT; index++) {
-            led_colors[index] = colors_by_status[aggregate];
+            led_colors[index] = color_for_status(aggregate);
         }
     } else {
         memset(led_colors, 0, sizeof(led_colors));
         for (int index = 0; index < 9; index++) {
-            led_colors[number_key_leds[index]] = colors_by_status[statuses[index]];
+            led_colors[number_key_leds[index]] =
+                color_for_status(statuses[index]);
         }
     }
 
@@ -690,6 +714,28 @@ static void refresh_lights(void) {
     apply_slot_colors(statuses);
 }
 
+static bool working_animation_is_visible(void) {
+    if (!task_lights_enabled || rgb_device == NULL) {
+        return false;
+    }
+    slot_status_t statuses[9];
+    if (test_override_until > time(NULL)) {
+        memcpy(statuses, test_statuses, sizeof(statuses));
+    } else {
+        collect_statuses(statuses);
+    }
+    if (rgb_protocol == RGB_PROTOCOL_QMK_VIA ||
+        lighting_mode == LIGHTING_WHOLE_BOARD) {
+        return aggregate_status(statuses) == SLOT_WORKING;
+    }
+    for (int index = 0; index < 9; index++) {
+        if (statuses[index] == SLOT_WORKING) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool write_atomic_slot_file(const char *path, int slot, int value) {
     char temporary_path[PATH_MAX];
     snprintf(temporary_path, sizeof(temporary_path), "%s.%ld.tmp",
@@ -738,6 +784,9 @@ static watched_thread_t *find_thread(const char *thread_id) {
 }
 
 static void update_thread_status(watched_thread_t *item, slot_status_t status) {
+    if (status == SLOT_WORKING && item->status != SLOT_WORKING) {
+        working_breath_frame = 0;
+    }
     item->status = status;
     item->touched_at = time(NULL);
 
@@ -1108,6 +1157,9 @@ static void process_test_request(struct timespec *last_mtime) {
     }
     test_statuses[slot - 1] = (slot_status_t)status;
     test_override_until = time(NULL) + 30;
+    if (status == SLOT_WORKING) {
+        working_breath_frame = 0;
+    }
     log_line("TEST", "Showing the requested status color for 30 seconds.");
     refresh_lights();
 }
@@ -1171,6 +1223,13 @@ static int run_daemon(void) {
         if (test_override_until != 0 && test_override_until <= time(NULL)) {
             test_override_until = 0;
             refresh_lights();
+        }
+        if (working_animation_is_visible()) {
+            working_breath_frame =
+                (working_breath_frame + 1) % WORKING_BREATH_FRAME_COUNT;
+            refresh_lights();
+        } else {
+            working_breath_frame = 0;
         }
         (void)refresh_direct_mode();
         usleep(DIRECT_REFRESH_INTERVAL_US);
@@ -1334,7 +1393,7 @@ static bool evision_device_present(void) {
         initWithTitle:@"测试灯光" action:nil keyEquivalent:@""];
     NSMenu *test_menu = [[NSMenu alloc] initWithTitle:@"测试灯光"];
     NSArray<NSArray *> *tests = @[
-        @[@"🔵  执行中", @(SLOT_WORKING)],
+        @[@"🔵  执行中（蓝色呼吸）", @(SLOT_WORKING)],
         @[@"🟢  完成未读", @(SLOT_UNREAD)],
         @[@"🟠  等待操作", @(SLOT_WAITING)],
         @[@"🔴  出错", @(SLOT_ERROR)],
@@ -1367,7 +1426,7 @@ static bool evision_device_present(void) {
     }
     [help_menu addItem:[NSMenuItem separatorItem]];
     NSArray<NSString *> *color_help = @[
-        @"🔵  执行中 — Codex 正在工作",
+        @"🔵  蓝色呼吸 — Codex 正在工作",
         @"🟢  完成未读 — 等你切回查看",
         @"🟠  等待操作 — 需要输入或批准",
         @"🔴  出错 — 任务执行失败",
