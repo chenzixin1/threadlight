@@ -1646,7 +1646,15 @@ static bool evision_device_present(void) {
     }
     log_line("UI", "Application quit confirmed.");
     should_stop = 1;
+    [NSApp stop:nil];
     CFRunLoopStop(CFRunLoopGetCurrent());
+}
+
+- (void)pollForTermination:(NSTimer *)timer {
+    (void)timer;
+    if (should_stop) {
+        [NSApp stop:nil];
+    }
 }
 
 @end
@@ -1661,6 +1669,12 @@ static void setup_menu_bar_ui(void) {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     [NSApp finishLaunching];
     menu_controller = [[BridgeMenuController alloc] init];
+    NSTimer *termination_timer = [NSTimer
+        timerWithTimeInterval:0.25 target:menu_controller
+                     selector:@selector(pollForTermination:)
+                     userInfo:nil repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:termination_timer
+                              forMode:NSRunLoopCommonModes];
 }
 
 static int slot_for_keycode(CGKeyCode keycode) {
@@ -1794,6 +1808,33 @@ static void stop_light_service(pid_t child_pid) {
     (void)waitpid(child_pid, NULL, 0);
 }
 
+static pid_t launch_shortcut_observer_process(void) {
+    pid_t child_pid = fork();
+    if (child_pid < 0) {
+        fprintf(stderr, "Unable to start the shortcut observer: %s\n",
+                strerror(errno));
+        return -1;
+    }
+    if (child_pid == 0) {
+        if (setpgid(0, 0) != 0) {
+            fprintf(stderr, "Unable to isolate the shortcut observer: %s\n",
+                    strerror(errno));
+            _exit(1);
+        }
+        execl(executable_path, executable_path, "--observer", (char *)NULL);
+        fprintf(stderr, "Unable to launch the shortcut observer: %s\n",
+                strerror(errno));
+        _exit(1);
+    }
+    if (setpgid(child_pid, child_pid) != 0 && errno != EACCES) {
+        log_line("ERROR", "Unable to supervise the shortcut observer process group.");
+        (void)kill(child_pid, SIGTERM);
+        (void)waitpid(child_pid, NULL, 0);
+        return -1;
+    }
+    return child_pid;
+}
+
 static int run_agent(void) {
     configure_background_logging();
     bool use_unprivileged_qmk_service = qmk_device_present();
@@ -1822,10 +1863,15 @@ static int run_agent(void) {
         return 1;
     }
 
+    pid_t observer_pid = launch_shortcut_observer_process();
     setup_menu_bar_ui();
-    int result = run_shortcut_observer();
+    log_line("READY", "Menu bar UI is accepting mouse input.");
+    [NSApp run];
+    if (observer_pid > 0) {
+        stop_light_service(observer_pid);
+    }
     stop_light_service(child_pid);
-    return result;
+    return 0;
 }
 #endif
 
