@@ -34,11 +34,15 @@
 #define FEKER_QMK_USAGE_PAGE 0xFF60
 #define FEKER_QMK_USAGE 0x0061
 #define QMK_REPORT_SIZE 32
-#define DAEMON_TICK_INTERVAL_US 100000
-#define WORKING_BREATH_FRAME_COUNT 36
-#define COMPLETE_BREATH_FRAME_COUNT 28
-#define WAITING_BREATH_FRAME_COUNT 44
-#define ERROR_ALERT_FRAME_COUNT 18
+#define DAEMON_TICK_INTERVAL_US 33333
+#define EVENT_POLL_TICK_COUNT 3
+#define THREAD_DISCOVERY_TICK_COUNT 60
+#define SETTINGS_PREVIEW_INTERVAL (1.0 / 60.0)
+#define WORKING_BREATH_SECONDS 3.6
+#define COMPLETE_BREATH_CYCLE_SECONDS 1.4
+#define COMPLETE_BREATH_TOTAL_SECONDS 2.8
+#define WAITING_BREATH_SECONDS 4.4
+#define ERROR_ALERT_SECONDS 0.8
 #define COMPLETE_RECOVERY_WINDOW_SECONDS 300
 #define MAX_THREADS 128
 #define MAX_TITLE 256
@@ -86,6 +90,10 @@ static bool qmk_original_saved = false;
 static uint8_t qmk_original_brightness = 0;
 static uint8_t qmk_original_effect = 0;
 static uint8_t qmk_original_color[2] = {0, 0};
+static bool qmk_task_mode_configured = false;
+static uint8_t qmk_applied_hue = 0;
+static uint8_t qmk_applied_saturation = 0;
+static int qmk_applied_brightness = -1;
 static char app_support_dir[PATH_MAX];
 static char test_request_path[PATH_MAX];
 static char task_lights_enabled_path[PATH_MAX];
@@ -99,13 +107,19 @@ static time_t test_override_until = 0;
 static bool task_lights_enabled = true;
 static color_scheme_t color_scheme = COLOR_SCHEME_CODEX;
 static uint8_t light_brightness_percent = 68;
-static size_t animation_frame = 0;
+static double animation_started_at = 0.0;
 static slot_status_t rendered_status = SLOT_OFF;
 static bool completion_latched = false;
 
 static void handle_signal(int signal_number) {
     (void)signal_number;
     should_stop = 1;
+}
+
+static double monotonic_seconds(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double)now.tv_sec + (double)now.tv_nsec / 1000000000.0;
 }
 
 static void log_line(const char *level, const char *message) {
@@ -348,19 +362,37 @@ static bool capture_qmk_original(void) {
     return true;
 }
 
-static bool apply_qmk_whole_board(rgb_t color) {
+static bool apply_qmk_whole_board(rgb_t color, uint8_t animation_scale) {
     uint8_t hue;
     uint8_t saturation;
     uint8_t brightness;
     rgb_to_hsv(color, &hue, &saturation, &brightness);
-    brightness = (uint8_t)(((uint16_t)brightness * light_brightness_percent + 50) /
-                           100);
+    uint32_t combined_scale =
+        (uint32_t)animation_scale * light_brightness_percent;
+    brightness = (uint8_t)(((uint32_t)brightness * combined_scale + 12750) /
+                           25500);
     uint8_t solid_effect = 1;
     uint8_t hsv_color[] = {hue, saturation};
-    return qmk_set_menu_value(rgb_device, 0x02, &solid_effect, 1) &&
-           qmk_set_menu_value(rgb_device, 0x04, hsv_color,
-                              sizeof(hsv_color)) &&
-           qmk_set_menu_value(rgb_device, 0x01, &brightness, 1);
+    if (!qmk_task_mode_configured || hue != qmk_applied_hue ||
+        saturation != qmk_applied_saturation) {
+        if (!qmk_set_menu_value(rgb_device, 0x02, &solid_effect, 1) ||
+            !qmk_set_menu_value(rgb_device, 0x04, hsv_color,
+                                sizeof(hsv_color))) {
+            return false;
+        }
+        qmk_task_mode_configured = true;
+        qmk_applied_hue = hue;
+        qmk_applied_saturation = saturation;
+        qmk_applied_brightness = -1;
+    }
+    if (qmk_applied_brightness == brightness) {
+        return true;
+    }
+    if (!qmk_set_menu_value(rgb_device, 0x01, &brightness, 1)) {
+        return false;
+    }
+    qmk_applied_brightness = brightness;
+    return true;
 }
 
 static void restore_qmk_original(void) {
@@ -383,6 +415,8 @@ static void close_rgb_device(bool end_direct_mode) {
     hid_close(rgb_device);
     rgb_device = NULL;
     qmk_original_saved = false;
+    qmk_task_mode_configured = false;
+    qmk_applied_brightness = -1;
 }
 
 static bool ensure_rgb_device(void) {
@@ -440,15 +474,24 @@ static slot_status_t aggregate_watched_status(void) {
     return aggregate;
 }
 
-static uint8_t smooth_breath_scale(size_t frame, size_t cycle_frames,
+static uint8_t smooth_breath_scale(double elapsed_seconds,
+                                   double cycle_seconds,
                                    uint8_t minimum, uint8_t maximum) {
-    size_t half = cycle_frames / 2;
-    size_t position = (frame + half) % cycle_frames;
-    size_t rising = position <= half ? position : cycle_frames - position;
-    uint64_t t = half == 0 ? 0 : ((uint64_t)rising << 16) / half;
-    uint64_t smooth = (t * t * ((3ULL << 16) - 2ULL * t)) >> 32;
-    uint64_t range = (uint64_t)maximum - minimum;
-    return (uint8_t)(minimum + ((range * smooth + 32768) >> 16));
+    double phase = cycle_seconds <= 0.0
+                       ? 0.0
+                       : fmod(elapsed_seconds, cycle_seconds) / cycle_seconds;
+    double triangle = fabs(2.0 * phase - 1.0);
+    double smooth = triangle * triangle * (3.0 - 2.0 * triangle);
+    double value = minimum + ((double)maximum - minimum) * smooth;
+    return (uint8_t)lround(value);
+}
+
+static uint8_t error_alert_scale(double elapsed_seconds) {
+    if (elapsed_seconds >= ERROR_ALERT_SECONDS) {
+        return 255;
+    }
+    int phase = (int)(elapsed_seconds / 0.2);
+    return phase % 2 == 0 ? 255 : 72;
 }
 
 static rgb_t base_color_for_status(color_scheme_t scheme,
@@ -482,30 +525,23 @@ static rgb_t base_color_for_status(color_scheme_t scheme,
     return palettes[scheme][status];
 }
 
-static rgb_t color_for_status(slot_status_t status) {
-    rgb_t color = base_color_for_status(color_scheme, status);
+static uint8_t animation_scale_for_status(slot_status_t status,
+                                          double elapsed_seconds) {
     uint8_t scale = 255;
     if (status == SLOT_WORKING) {
-        scale = smooth_breath_scale(animation_frame,
-                                    WORKING_BREATH_FRAME_COUNT, 112, 255);
+        scale = smooth_breath_scale(elapsed_seconds,
+                                    WORKING_BREATH_SECONDS, 112, 255);
     } else if (status == SLOT_COMPLETE &&
-               animation_frame < COMPLETE_BREATH_FRAME_COUNT) {
-        scale = smooth_breath_scale(animation_frame,
-                                    COMPLETE_BREATH_FRAME_COUNT / 2, 118, 255);
+               elapsed_seconds < COMPLETE_BREATH_TOTAL_SECONDS) {
+        scale = smooth_breath_scale(elapsed_seconds,
+                                    COMPLETE_BREATH_CYCLE_SECONDS, 118, 255);
     } else if (status == SLOT_WAITING) {
-        scale = smooth_breath_scale(animation_frame,
-                                    WAITING_BREATH_FRAME_COUNT, 96, 255);
-    } else if (status == SLOT_ERROR && animation_frame < ERROR_ALERT_FRAME_COUNT) {
-        static const uint8_t error_scale[ERROR_ALERT_FRAME_COUNT] = {
-            255, 255, 72, 72, 255, 255, 72, 72, 255,
-            255, 255, 255, 255, 255, 255, 255, 255, 255,
-        };
-        scale = error_scale[animation_frame];
+        scale = smooth_breath_scale(elapsed_seconds,
+                                    WAITING_BREATH_SECONDS, 96, 255);
+    } else if (status == SLOT_ERROR) {
+        scale = error_alert_scale(elapsed_seconds);
     }
-    color.r = (uint8_t)(((uint16_t)color.r * scale + 127) / 255);
-    color.g = (uint8_t)(((uint16_t)color.g * scale + 127) / 255);
-    color.b = (uint8_t)(((uint16_t)color.b * scale + 127) / 255);
-    return color;
+    return scale;
 }
 
 static bool apply_status_color(slot_status_t status) {
@@ -516,8 +552,12 @@ static bool apply_status_color(slot_status_t status) {
     if (!ensure_rgb_device()) {
         return false;
     }
+    double elapsed_seconds = monotonic_seconds() - animation_started_at;
+    rgb_t base_color = base_color_for_status(color_scheme, status);
+    uint8_t animation_scale =
+        animation_scale_for_status(status, elapsed_seconds);
     bool ok = capture_qmk_original() &&
-              apply_qmk_whole_board(color_for_status(status));
+              apply_qmk_whole_board(base_color, animation_scale);
     if (!ok) {
         log_line("ERROR", "FEKER did not acknowledge the VIA RGB update.");
         close_rgb_device(false);
@@ -541,7 +581,7 @@ static void refresh_lights(void) {
     }
     if (status != rendered_status) {
         rendered_status = status;
-        animation_frame = 0;
+        animation_started_at = monotonic_seconds();
     }
     apply_status_color(status);
 }
@@ -556,10 +596,11 @@ static bool status_animation_needs_tick(void) {
     } else {
         status = aggregate_watched_status();
     }
+    double elapsed_seconds = monotonic_seconds() - animation_started_at;
     return status == SLOT_WORKING || status == SLOT_WAITING ||
            (status == SLOT_COMPLETE &&
-            animation_frame < COMPLETE_BREATH_FRAME_COUNT) ||
-           (status == SLOT_ERROR && animation_frame < ERROR_ALERT_FRAME_COUNT);
+            elapsed_seconds < COMPLETE_BREATH_TOTAL_SECONDS) ||
+           (status == SLOT_ERROR && elapsed_seconds < ERROR_ALERT_SECONDS);
 }
 
 static bool write_atomic_test_request(slot_status_t status) {
@@ -1001,7 +1042,7 @@ static void process_test_request(struct timespec *last_mtime) {
     test_status = (slot_status_t)status;
     test_override_until = time(NULL) + 30;
     rendered_status = SLOT_OFF;
-    animation_frame = 0;
+    animation_started_at = monotonic_seconds();
     log_line("TEST", "Showing the requested status color for 30 seconds.");
     refresh_lights();
 }
@@ -1051,27 +1092,28 @@ static int run_daemon(void) {
     struct timespec brightness_mtime = {0, 0};
     struct timespec test_mtime = {0, 0};
     while (!should_stop) {
-        if (ticks % 20 == 0) {
+        if (ticks % THREAD_DISCOVERY_TICK_COUNT == 0) {
             discover_threads(database);
             if (rgb_device == NULL) {
                 refresh_lights();
             }
         }
-        for (size_t index = 0; index < watched_count; index++) {
-            if (watched[index].active) {
-                process_appended_events(&watched[index]);
+        if (ticks % EVENT_POLL_TICK_COUNT == 0) {
+            for (size_t index = 0; index < watched_count; index++) {
+                if (watched[index].active) {
+                    process_appended_events(&watched[index]);
+                }
             }
+            process_task_lights_enabled(&enabled_mtime);
+            process_color_scheme(&scheme_mtime);
+            process_brightness(&brightness_mtime);
+            process_test_request(&test_mtime);
         }
-        process_task_lights_enabled(&enabled_mtime);
-        process_color_scheme(&scheme_mtime);
-        process_brightness(&brightness_mtime);
-        process_test_request(&test_mtime);
         if (test_override_until != 0 && test_override_until <= time(NULL)) {
             test_override_until = 0;
             refresh_lights();
         }
         if (status_animation_needs_tick()) {
-            animation_frame++;
             refresh_lights();
         }
         usleep(DAEMON_TICK_INTERVAL_US);
@@ -1089,6 +1131,7 @@ static int run_daemon(void) {
 static int test_status_color(slot_status_t status) {
     (void)load_color_scheme();
     (void)load_brightness();
+    animation_started_at = monotonic_seconds();
     return apply_status_color(status) ? 0 : 1;
 }
 
@@ -1157,12 +1200,23 @@ static NSImage *task_light_menu_icon(bool enabled) {
 
 - (void)setColor:(NSColor *)color intensity:(CGFloat)intensity {
     NSColor *rgb = [color colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    CGFloat red = 0.0;
+    CGFloat green = 0.0;
+    CGFloat blue = 0.0;
     CGFloat alpha = 1.0;
-    [rgb getRed:&preview_red green:&preview_green blue:&preview_blue
-          alpha:&alpha];
-    preview_intensity = fmax(0.04, fmin(1.0, intensity));
+    [rgb getRed:&red green:&green blue:&blue alpha:&alpha];
+    CGFloat next_intensity = fmax(0.04, fmin(1.0, intensity));
+    if (fabs(preview_red - red) < 0.0005 &&
+        fabs(preview_green - green) < 0.0005 &&
+        fabs(preview_blue - blue) < 0.0005 &&
+        fabs(preview_intensity - next_intensity) < 0.0005) {
+        return;
+    }
+    preview_red = red;
+    preview_green = green;
+    preview_blue = blue;
+    preview_intensity = next_intensity;
     [self setNeedsDisplay:YES];
-    [self displayIfNeeded];
 }
 
 - (void)drawRect:(NSRect)dirty_rect {
@@ -1215,7 +1269,7 @@ static NSImage *task_light_menu_icon(bool enabled) {
     NSTextField *brightness_value_label;
     NSArray<StatusPreviewView *> *status_cards;
     NSTimer *preview_timer;
-    size_t preview_frame;
+    CFTimeInterval preview_started_at;
 }
 @end
 
@@ -1478,7 +1532,7 @@ static NSImage *task_light_menu_icon(bool enabled) {
     [content addSubview:brightness_slider];
 
     preview_timer = [NSTimer
-        timerWithTimeInterval:0.1 target:self
+        timerWithTimeInterval:SETTINGS_PREVIEW_INTERVAL target:self
                      selector:@selector(animateSettingsPreview:)
                      userInfo:nil repeats:YES];
     [[NSRunLoop mainRunLoop] addTimer:preview_timer
@@ -1493,28 +1547,10 @@ static NSImage *task_light_menu_icon(bool enabled) {
     static const slot_status_t statuses[] = {
         SLOT_WORKING, SLOT_COMPLETE, SLOT_WAITING, SLOT_ERROR, SLOT_IDLE,
     };
-    static const uint8_t error_scale[ERROR_ALERT_FRAME_COUNT] = {
-        255, 255, 72, 72, 255, 255, 72, 72, 255,
-        255, 255, 255, 255, 255, 255, 255, 255, 255,
-    };
+    double elapsed_seconds = CACurrentMediaTime() - preview_started_at;
     for (NSInteger index = 0; index < 5; index++) {
         slot_status_t status = statuses[index];
-        uint8_t scale = 255;
-        if (status == SLOT_WORKING) {
-            scale = smooth_breath_scale(preview_frame,
-                                        WORKING_BREATH_FRAME_COUNT, 112, 255);
-        } else if (status == SLOT_COMPLETE &&
-                   preview_frame < COMPLETE_BREATH_FRAME_COUNT) {
-            scale = smooth_breath_scale(preview_frame,
-                                        COMPLETE_BREATH_FRAME_COUNT / 2,
-                                        118, 255);
-        } else if (status == SLOT_WAITING) {
-            scale = smooth_breath_scale(preview_frame,
-                                        WAITING_BREATH_FRAME_COUNT, 96, 255);
-        } else if (status == SLOT_ERROR &&
-                   preview_frame < ERROR_ALERT_FRAME_COUNT) {
-            scale = error_scale[preview_frame];
-        }
+        uint8_t scale = animation_scale_for_status(status, elapsed_seconds);
         rgb_t base = status == SLOT_IDLE
                          ? (rgb_t){0x8E, 0x8E, 0x93}
                          : base_color_for_status(color_scheme, status);
@@ -1526,7 +1562,6 @@ static NSImage *task_light_menu_icon(bool enabled) {
                             ((CGFloat)light_brightness_percent / 100.0);
         [status_cards[index] setColor:color intensity:intensity];
     }
-    preview_frame++;
 }
 
 - (void)showLightSettings:(id)sender {
@@ -1538,7 +1573,7 @@ static NSImage *task_light_menu_icon(bool enabled) {
     brightness_slider.integerValue = light_brightness_percent;
     brightness_value_label.stringValue =
         [NSString stringWithFormat:@"%u%%", light_brightness_percent];
-    preview_frame = 0;
+    preview_started_at = CACurrentMediaTime();
     [NSApp activateIgnoringOtherApps:YES];
     [light_settings_window makeKeyAndOrderFront:nil];
     [self animateSettingsPreview:nil];
@@ -1553,7 +1588,7 @@ static NSImage *task_light_menu_icon(bool enabled) {
         log_line("ERROR", "Unable to save the color scheme.");
         return;
     }
-    preview_frame = 0;
+    preview_started_at = CACurrentMediaTime();
     [self animateSettingsPreview:nil];
     [self updateAppearance];
 }
@@ -1694,7 +1729,7 @@ static NSImage *task_light_menu_icon(bool enabled) {
     if (!save_color_scheme(selected)) {
         log_line("ERROR", "Unable to save the color scheme.");
     }
-    preview_frame = 0;
+    preview_started_at = CACurrentMediaTime();
     [self animateSettingsPreview:nil];
     [self updateAppearance];
 }
