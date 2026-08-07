@@ -427,22 +427,6 @@ static bool ensure_rgb_device(void) {
     return rgb_device != NULL;
 }
 
-static bool qmk_device_present(void) {
-    struct hid_device_info *devices =
-        hid_enumerate(FEKER_QMK_VID, FEKER_QMK_PID);
-    bool found = false;
-    for (struct hid_device_info *item = devices; item != NULL;
-         item = item->next) {
-        if (item->usage_page == FEKER_QMK_USAGE_PAGE &&
-            item->usage == FEKER_QMK_USAGE) {
-            found = true;
-            break;
-        }
-    }
-    hid_free_enumeration(devices);
-    return found;
-}
-
 static int status_priority(slot_status_t status) {
     static const int priority[] = {
         [SLOT_OFF] = 0,
@@ -1351,7 +1335,6 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     NSStatusItem *status_item;
     NSMenu *status_menu;
     NSMenuItem *toggle_item;
-    NSMenuItem *device_item;
     NSMenuItem *scheme_items[COLOR_SCHEME_COUNT];
     NSMenuItem *test_menu_item;
     NSMenuItem *login_at_startup_item;
@@ -1386,12 +1369,6 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
         keyEquivalent:@""];
     toggle_item.target = self;
     [status_menu addItem:toggle_item];
-
-    device_item = [[NSMenuItem alloc]
-        initWithTitle:L("device.detecting", "Detecting keyboard…")
-                action:nil keyEquivalent:@""];
-    device_item.enabled = NO;
-    [status_menu addItem:device_item];
     [status_menu addItem:[NSMenuItem separatorItem]];
 
     NSMenuItem *scheme_menu_item = [[NSMenuItem alloc]
@@ -1846,13 +1823,6 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
             L("startup.requires_macos", "Launch at Login (requires macOS 13)");
     }
 
-    if (qmk_device_present()) {
-        device_item.title =
-            L("device.connected", "FEKER QMK/VIA · Whole-board lights");
-    } else {
-        device_item.title =
-            L("device.not_found", "No compatible wired keyboard found");
-    }
 }
 
 - (void)menuWillOpen:(NSMenu *)menu {

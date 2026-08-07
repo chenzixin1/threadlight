@@ -1,10 +1,6 @@
 "app.menu_title" = "FEKER 任务灯";
 "task_lights.on" = "任务灯已开启";
 "task_lights.off" = "任务灯已暂停";
-"device.detecting" = "正在检测键盘…";
-"device.connected" = "FEKER QMK/VIA · 整板状态灯";
-"device.not_found" = "未检测到兼容的有线键盘";
-
 "scheme.title" = "配色方案";
 "scheme.codex" = "Codex 默认";
 "scheme.ocean" = "海洋 Ocean";

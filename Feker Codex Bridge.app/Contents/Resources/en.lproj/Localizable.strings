@@ -1,10 +1,6 @@
 "app.menu_title" = "FEKER Task Lights";
 "task_lights.on" = "Task lights on";
 "task_lights.off" = "Task lights paused";
-"device.detecting" = "Detecting keyboard…";
-"device.connected" = "FEKER QMK/VIA · Whole-board lights";
-"device.not_found" = "No compatible wired keyboard found";
-
 "scheme.title" = "Color Scheme";
 "scheme.codex" = "Codex Default";
 "scheme.ocean" = "Ocean";
