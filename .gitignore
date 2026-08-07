@@ -1,7 +1,7 @@
 .DS_Store
 feker-rgb
-Feker Codex Bridge.app/Contents/MacOS/
-Feker Codex Bridge.app/Contents/_CodeSignature/
-Feker Codex Bridge.app/Contents/Resources/AppIcon.icns
+Threadlight.app/Contents/MacOS/
+Threadlight.app/Contents/_CodeSignature/
+Threadlight.app/Contents/Resources/AppIcon.icns
 *.log
 *.tmp

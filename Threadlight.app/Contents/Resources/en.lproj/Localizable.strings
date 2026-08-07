@@ -1,0 +1,55 @@
+"app.menu_title" = "Threadlight";
+"task_lights.on" = "Task lights on";
+"task_lights.off" = "Task lights paused";
+"scheme.title" = "Color Scheme";
+"scheme.codex" = "Codex Default";
+"scheme.ocean" = "Ocean";
+"scheme.violet" = "Violet";
+"light_settings" = "Light Settings…";
+
+"test.title" = "Test Lights";
+"test.working" = "Working (breathing)";
+"test.complete" = "Complete (two breaths, then solid)";
+"test.waiting" = "Waiting for input";
+"test.error" = "Task failed";
+"test.idle" = "Idle";
+"test.off" = "Turn off test";
+
+"help.title" = "How It Works";
+"help.open_menu" = "Click the icon to open this menu";
+"help.toggle" = "Use the first item to pause task lights";
+"help.working" = "Working — breathing work color";
+"help.complete" = "Complete — two breaths, then solid";
+"help.waiting" = "Waiting — input or approval needed";
+"help.error" = "Failed — the task could not finish";
+"help.idle" = "Idle — no task is running";
+
+"log.open" = "Open Log…";
+"settings.title" = "Settings";
+"startup.title" = "Launch at Login";
+"startup.open_settings" = "Open Login Items Settings…";
+"startup.requires_approval" = "Launch at Login (approval required)";
+"startup.requires_macos" = "Launch at Login (requires macOS 13)";
+"github.open" = "Project on GitHub…";
+"quit.title" = "Quit Threadlight";
+
+"window.title" = "Threadlight";
+"status.section" = "Status";
+"status.working" = "Working";
+"status.complete" = "Complete";
+"status.waiting" = "Waiting";
+"status.error" = "Failed";
+"status.idle" = "Idle";
+"effect.breathing" = "Breathing";
+"effect.two_breaths" = "2 breaths → solid";
+"effect.slow_pulse" = "Slow pulse";
+"effect.two_flashes" = "2 flashes → solid";
+"effect.restore" = "Restore RGB";
+"brightness.title" = "Brightness";
+
+"tooltip.on" = "Threadlight is on · Click for menu";
+"tooltip.off" = "Threadlight is paused · Click for menu";
+"quit.message" = "Quit Threadlight?";
+"quit.informative" = "Task lights will stop and the keyboard's original RGB effect will return.";
+"quit.cancel" = "Cancel";
+"quit.confirm" = "Quit";

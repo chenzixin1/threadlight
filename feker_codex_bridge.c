@@ -154,8 +154,15 @@ static bool initialize_paths(void) {
     snprintf(application_support_dir, sizeof(application_support_dir),
              "%s/Application Support", library_dir);
     snprintf(logs_dir, sizeof(logs_dir), "%s/Logs", library_dir);
+    char legacy_app_support_dir[PATH_MAX];
     snprintf(app_support_dir, sizeof(app_support_dir),
+             "%s/Threadlight", application_support_dir);
+    snprintf(legacy_app_support_dir, sizeof(legacy_app_support_dir),
              "%s/Feker Codex Bridge", application_support_dir);
+    if (access(app_support_dir, F_OK) != 0 &&
+        access(legacy_app_support_dir, F_OK) == 0) {
+        (void)rename(legacy_app_support_dir, app_support_dir);
+    }
     snprintf(test_request_path, sizeof(test_request_path),
              "%s/test-request.tsv", app_support_dir);
     snprintf(task_lights_enabled_path, sizeof(task_lights_enabled_path),
@@ -165,7 +172,7 @@ static bool initialize_paths(void) {
     snprintf(brightness_path, sizeof(brightness_path),
              "%s/brightness.txt", app_support_dir);
     snprintf(database_path, sizeof(database_path), "%s/.codex/state_5.sqlite", home);
-    snprintf(log_path, sizeof(log_path), "%s/FekerCodexBridge.log", logs_dir);
+    snprintf(log_path, sizeof(log_path), "%s/Threadlight.log", logs_dir);
 
     return ensure_directory(library_dir) &&
            ensure_directory(application_support_dir) &&
@@ -1036,7 +1043,7 @@ static int run_daemon(void) {
     snprintf(lock_path, sizeof(lock_path), "%s/daemon.lock", app_support_dir);
     int lock_fd = open(lock_path, O_CREAT | O_RDWR, 0644);
     if (lock_fd < 0 || flock(lock_fd, LOCK_EX | LOCK_NB) != 0) {
-        log_line("INFO", "Feker Codex Bridge is already running.");
+        log_line("INFO", "Threadlight is already running.");
         if (lock_fd >= 0) {
             close(lock_fd);
         }
@@ -1108,7 +1115,7 @@ static int run_daemon(void) {
     sqlite3_close(database);
     flock(lock_fd, LOCK_UN);
     close(lock_fd);
-    log_line("STOP", "Feker Codex Bridge stopped.");
+    log_line("STOP", "Threadlight stopped.");
     return 0;
 }
 
@@ -1120,7 +1127,7 @@ static int test_status_color(slot_status_t status) {
 }
 
 #ifdef __OBJC__
-static NSImage *task_light_menu_icon(bool enabled) {
+static NSImage *threadlight_menu_icon(bool enabled) {
     NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(18.0, 18.0)];
     [image lockFocus];
 
@@ -1133,15 +1140,23 @@ static NSImage *task_light_menu_icon(bool enabled) {
     [keycap stroke];
 
     if (enabled) {
-        for (CGFloat x = 5.0; x <= 13.0; x += 4.0) {
-            [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(x - 1.0, 8.0,
-                                                               2.0, 2.0)] fill];
+        NSBezierPath *thread = [NSBezierPath bezierPath];
+        thread.lineWidth = 1.45;
+        thread.lineCapStyle = NSLineCapStyleRound;
+        thread.lineJoinStyle = NSLineJoinStyleRound;
+        [thread moveToPoint:NSMakePoint(4.5, 6.0)];
+        [thread curveToPoint:NSMakePoint(13.5, 11.5)
+               controlPoint1:NSMakePoint(7.0, 6.0)
+               controlPoint2:NSMakePoint(9.0, 12.0)];
+        [thread stroke];
+        for (NSValue *point_value in @[
+                 [NSValue valueWithPoint:NSMakePoint(4.5, 6.0)],
+                 [NSValue valueWithPoint:NSMakePoint(9.0, 9.0)],
+                 [NSValue valueWithPoint:NSMakePoint(13.5, 11.5)]]) {
+            NSPoint point = point_value.pointValue;
+            [[NSBezierPath bezierPathWithOvalInRect:
+                NSMakeRect(point.x - 1.05, point.y - 1.05, 2.1, 2.1)] fill];
         }
-        NSBezierPath *base = [NSBezierPath bezierPath];
-        base.lineWidth = 1.5;
-        [base moveToPoint:NSMakePoint(5.0, 5.5)];
-        [base lineToPoint:NSMakePoint(13.0, 5.5)];
-        [base stroke];
     } else {
         NSBezierPath *pause = [NSBezierPath bezierPath];
         pause.lineWidth = 1.8;
@@ -1373,7 +1388,7 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     status_item.button.title = @"";
     status_item.button.imagePosition = NSImageOnly;
 
-    status_menu = [[NSMenu alloc] initWithTitle:L("app.menu_title", "FEKER Task Lights")];
+    status_menu = [[NSMenu alloc] initWithTitle:L("app.menu_title", "Threadlight")];
     status_menu.delegate = self;
     toggle_item = [[NSMenuItem alloc]
         initWithTitle:L("task_lights.on", "Task lights on")
@@ -1506,7 +1521,7 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
 
     [status_menu addItem:[NSMenuItem separatorItem]];
     NSMenuItem *quit_item = [[NSMenuItem alloc]
-        initWithTitle:L("quit.title", "Quit FEKER Task Lights")
+        initWithTitle:L("quit.title", "Quit Threadlight")
                 action:@selector(quit:)
         keyEquivalent:@"q"];
     quit_item.target = self;
@@ -1552,7 +1567,7 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
                             NSWindowStyleMaskClosable
                     backing:NSBackingStoreBuffered
                       defer:NO];
-    light_settings_window.title = L("window.title", "Task Lights");
+    light_settings_window.title = L("window.title", "Threadlight");
     light_settings_window.releasedWhenClosed = NO;
     light_settings_window.delegate = self;
     [light_settings_window center];
@@ -1819,10 +1834,10 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
         brightness_value_label.stringValue =
             [NSString stringWithFormat:@"%u%%", light_brightness_percent];
     }
-    status_item.button.image = task_light_menu_icon(task_lights_enabled);
+    status_item.button.image = threadlight_menu_icon(task_lights_enabled);
     status_item.button.toolTip = task_lights_enabled
-                                     ? L("tooltip.on", "FEKER task lights on · Click for menu")
-                                     : L("tooltip.off", "FEKER task lights paused · Click for menu");
+                                     ? L("tooltip.on", "Threadlight is on · Click for menu")
+                                     : L("tooltip.off", "Threadlight is paused · Click for menu");
 
     if (@available(macOS 13.0, *)) {
         SMAppServiceStatus login_status = [SMAppService mainAppService].status;
@@ -1886,7 +1901,7 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
 - (void)openLog:(id)sender {
     (void)sender;
     NSString *path = [NSHomeDirectory()
-        stringByAppendingPathComponent:@"Library/Logs/FekerCodexBridge.log"];
+        stringByAppendingPathComponent:@"Library/Logs/Threadlight.log"];
     [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:path]];
 }
 
@@ -1937,7 +1952,7 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     (void)sender;
     log_line("UI", "Menu action: request application quit.");
     NSAlert *alert = [[NSAlert alloc] init];
-    alert.messageText = L("quit.message", "Quit FEKER Task Lights?");
+    alert.messageText = L("quit.message", "Quit Threadlight?");
     alert.informativeText =
         L("quit.informative",
           "Task lights will stop and the keyboard's original RGB effect will return.");

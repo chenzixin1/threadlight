@@ -1,9 +1,9 @@
 #!/bin/zsh
 set -euo pipefail
 
-app_binary="/Applications/Feker Codex Bridge.app/Contents/MacOS/FekerCodexBridge"
+app_binary="/Applications/Threadlight.app/Contents/MacOS/Threadlight"
 if [[ ! -x "$app_binary" ]]; then
-  echo "Feker Codex Bridge is not installed. Run install-service.command first."
+  echo "Threadlight is not installed. Run install-service.command first."
   read "?Press Return to close…"
   exit 1
 fi
