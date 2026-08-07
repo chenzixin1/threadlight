@@ -1,0 +1,59 @@
+"app.menu_title" = "FEKER 任务灯";
+"task_lights.on" = "任务灯已开启";
+"task_lights.off" = "任务灯已暂停";
+"device.detecting" = "正在检测键盘…";
+"device.connected" = "FEKER QMK/VIA · 整板状态灯";
+"device.not_found" = "未检测到兼容的有线键盘";
+
+"scheme.title" = "配色方案";
+"scheme.codex" = "Codex 默认";
+"scheme.ocean" = "海洋 Ocean";
+"scheme.violet" = "紫罗兰 Violet";
+"light_settings" = "灯光设置…";
+
+"test.title" = "测试灯光";
+"test.working" = "执行中（呼吸）";
+"test.complete" = "任务完成（呼吸两次后常亮）";
+"test.waiting" = "等待操作";
+"test.error" = "任务失败";
+"test.idle" = "空闲";
+"test.off" = "熄灭测试灯";
+
+"help.title" = "使用说明";
+"help.open_menu" = "点击图标：打开菜单";
+"help.toggle" = "菜单第一项：开启或暂停任务灯";
+"help.working" = "执行中 — 工作色呼吸";
+"help.complete" = "任务完成 — 呼吸两次后常亮";
+"help.waiting" = "等待操作 — 需要输入或批准";
+"help.error" = "任务失败 — 未能完成任务";
+"help.idle" = "空闲 — 当前没有进行中的任务";
+
+"log.open" = "查看运行日志…";
+"settings.title" = "设置";
+"startup.title" = "开机自动启动";
+"startup.open_settings" = "打开系统登录项设置…";
+"startup.requires_approval" = "开机自动启动（等待系统批准）";
+"startup.requires_macos" = "开机自动启动（需要 macOS 13）";
+"github.open" = "项目主页（GitHub）…";
+"quit.title" = "退出 FEKER 任务灯";
+
+"window.title" = "任务灯";
+"status.section" = "状态";
+"status.working" = "执行中";
+"status.complete" = "已完成";
+"status.waiting" = "等待用户";
+"status.error" = "任务失败";
+"status.idle" = "空闲";
+"effect.breathing" = "呼吸";
+"effect.two_breaths" = "呼吸两次 → 常亮";
+"effect.slow_pulse" = "慢闪";
+"effect.two_flashes" = "双闪 → 常亮";
+"effect.restore" = "恢复原灯效";
+"brightness.title" = "亮度";
+
+"tooltip.on" = "FEKER 任务灯已开启 · 点击打开菜单";
+"tooltip.off" = "FEKER 任务灯已暂停 · 点击打开菜单";
+"quit.message" = "退出 FEKER 任务灯？";
+"quit.informative" = "任务状态灯会停止，并恢复键盘原有灯效。";
+"quit.cancel" = "取消";
+"quit.confirm" = "退出";

@@ -74,6 +74,8 @@ Alice80 键盘本身可以通过 Type-C、2.4GHz 和 Bluetooth 打字，但本�
 
 “灯光设置”只包含配色方案和亮度。状态标签会直接预览执行中呼吸、完成呼吸两次后常亮、等待慢闪以及失败双闪后常亮。界面预览以 60 FPS 绘制，键盘通过 Raw HID 以 30 FPS 更新；亮度范围为 20%–100%，保存在 `brightness.txt`。
 
+应用原生支持简体中文和英文，并跟随 macOS 的首选语言。所有界面使用 macOS 系统字体：中文字符自动使用苹方，英文字符使用 SF Pro。
+
 ## Codex 设置
 
 本项目面向 macOS ChatGPT 桌面应用中的 Codex：
@@ -244,6 +246,8 @@ Choose one of three whole-board schemes from the menu bar or **Light settings / 
 | Violet | `#8B5CF6` | `#2DD4BF` | `#F59E0B` | `#E11D48` |
 
 Light settings contain only the scheme and a 20%–100% brightness control. The status cards preview working breath, two completion breaths followed by solid, waiting pulse, and two failure flashes followed by solid. The preview renders at 60 FPS while Raw HID updates the keyboard at 30 FPS. Brightness is saved in `brightness.txt`.
+
+The app ships native Simplified Chinese and English localizations and follows the preferred macOS language. It uses the macOS system font throughout: PingFang for Chinese glyphs and SF Pro for English glyphs.
 
 ## Codex setup
 
