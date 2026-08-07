@@ -1193,6 +1193,8 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
 
 @interface StatusPreviewView : NSView {
     NSString *preview_title;
+    CAGradientLayer *fill_layer;
+    CATextLayer *title_layer;
     CGFloat preview_red;
     CGFloat preview_green;
     CGFloat preview_blue;
@@ -1212,8 +1214,48 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
         preview_green = 0.48;
         preview_blue = 0.95;
         preview_intensity = 1.0;
+        self.wantsLayer = YES;
+
+        fill_layer = [CAGradientLayer layer];
+        fill_layer.startPoint = CGPointMake(0.5, 1.0);
+        fill_layer.endPoint = CGPointMake(0.5, 0.0);
+        fill_layer.cornerRadius = 7.0;
+        fill_layer.borderWidth = 0.5;
+        [self.layer addSublayer:fill_layer];
+
+        title_layer = [CATextLayer layer];
+        title_layer.string = preview_title;
+        title_layer.alignmentMode = kCAAlignmentCenter;
+        title_layer.truncationMode = kCATruncationEnd;
+        title_layer.wrapped = NO;
+        title_layer.font = (__bridge CFTypeRef)
+            [NSFont systemFontOfSize:10.5 weight:NSFontWeightSemibold];
+        title_layer.fontSize = 10.5;
+        [self.layer addSublayer:title_layer];
+        [self setColor:NSColor.controlAccentColor intensity:1.0];
     }
     return self;
+}
+
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    CGFloat scale = self.window.screen.backingScaleFactor;
+    if (scale <= 0.0) {
+        scale = NSScreen.mainScreen.backingScaleFactor;
+    }
+    fill_layer.contentsScale = scale;
+    title_layer.contentsScale = scale;
+    [self setNeedsLayout:YES];
+}
+
+- (void)layout {
+    [super layout];
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    fill_layer.frame = self.bounds;
+    title_layer.frame = CGRectMake(4.0, 5.0,
+                                   NSWidth(self.bounds) - 8.0, 14.0);
+    [CATransaction commit];
 }
 
 - (void)setColor:(NSColor *)color intensity:(CGFloat)intensity {
@@ -1234,36 +1276,38 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     preview_green = green;
     preview_blue = blue;
     preview_intensity = next_intensity;
-    [self setNeedsDisplay:YES];
-}
+    CGFloat rendered_red = preview_red * preview_intensity;
+    CGFloat rendered_green = preview_green * preview_intensity;
+    CGFloat rendered_blue = preview_blue * preview_intensity;
 
-- (void)drawRect:(NSRect)dirty_rect {
-    (void)dirty_rect;
-    CGFloat red = preview_red * preview_intensity;
-    CGFloat green = preview_green * preview_intensity;
-    CGFloat blue = preview_blue * preview_intensity;
-    NSColor *fill = [NSColor colorWithSRGBRed:red green:green blue:blue alpha:1.0];
-    [fill setFill];
-    [[NSBezierPath bezierPathWithRoundedRect:self.bounds
-                                     xRadius:7.0 yRadius:7.0] fill];
+    CGFloat top_red = fmin(1.0, rendered_red * 1.04 + 0.012);
+    CGFloat top_green = fmin(1.0, rendered_green * 1.04 + 0.012);
+    CGFloat top_blue = fmin(1.0, rendered_blue * 1.04 + 0.012);
+    CGFloat bottom_red = rendered_red * 0.96;
+    CGFloat bottom_green = rendered_green * 0.96;
+    CGFloat bottom_blue = rendered_blue * 0.96;
+    NSColor *top_color = [NSColor colorWithSRGBRed:top_red
+                                             green:top_green
+                                              blue:top_blue alpha:1.0];
+    NSColor *bottom_color = [NSColor colorWithSRGBRed:bottom_red
+                                                green:bottom_green
+                                                 blue:bottom_blue alpha:1.0];
 
-    CGFloat luminance = red * 0.299 + green * 0.587 + blue * 0.114;
+    CGFloat luminance = rendered_red * 0.299 +
+                        rendered_green * 0.587 +
+                        rendered_blue * 0.114;
     NSColor *text_color = luminance > 0.66 ? NSColor.blackColor
                                            : NSColor.whiteColor;
-    NSMutableParagraphStyle *paragraph = [[NSMutableParagraphStyle alloc] init];
-    paragraph.alignment = NSTextAlignmentCenter;
-    NSDictionary *attributes = @{
-        NSFontAttributeName : [NSFont systemFontOfSize:10.5
-                                                weight:NSFontWeightSemibold],
-        NSForegroundColorAttributeName : text_color,
-        NSParagraphStyleAttributeName : paragraph,
-    };
-    NSSize text_size = [preview_title sizeWithAttributes:attributes];
-    NSRect text_rect = NSMakeRect(0,
-                                  floor((NSHeight(self.bounds) -
-                                         text_size.height) / 2.0) - 0.5,
-                                  NSWidth(self.bounds), text_size.height + 2.0);
-    [preview_title drawInRect:text_rect withAttributes:attributes];
+    NSColor *border_color = luminance > 0.66
+                                ? [NSColor colorWithWhite:0.0 alpha:0.10]
+                                : [NSColor colorWithWhite:1.0 alpha:0.16];
+
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    fill_layer.colors = @[(id)top_color.CGColor, (id)bottom_color.CGColor];
+    fill_layer.borderColor = border_color.CGColor;
+    title_layer.foregroundColor = text_color.CGColor;
+    [CATransaction commit];
 }
 
 - (void)dealloc {
@@ -1518,7 +1562,8 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     for (NSInteger index = 0; index < 5; index++) {
         NSInteger column = index % 3;
         NSInteger row = index / 3;
-        CGFloat x = 14 + column * 102;
+        CGFloat x = row == 0 ? 14 + column * 102
+                             : 65 + column * 102;
         CGFloat y = 196 - row * 50;
 
         StatusPreviewView *card = [[StatusPreviewView alloc]
@@ -1550,6 +1595,9 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     [scheme_control setLabel:@"Ocean" forSegment:1];
     [scheme_control setLabel:@"Violet" forSegment:2];
     scheme_control.segmentStyle = NSSegmentStyleRounded;
+    scheme_control.controlSize = NSControlSizeSmall;
+    scheme_control.font =
+        [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
     scheme_control.target = self;
     scheme_control.action = @selector(chooseSchemeFromSettings:);
     [content addSubview:scheme_control];
@@ -1573,6 +1621,7 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     brightness_slider.minValue = 20;
     brightness_slider.maxValue = 100;
     brightness_slider.continuous = YES;
+    brightness_slider.controlSize = NSControlSizeSmall;
     [brightness_slider sendActionOn:NSEventMaskLeftMouseDown |
                                    NSEventMaskLeftMouseDragged |
                                    NSEventMaskLeftMouseUp];
