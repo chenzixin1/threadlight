@@ -1194,12 +1194,11 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     NSRect border_rect = NSInsetRect(self.bounds, 0.25, 0.25);
     NSBezierPath *path = [NSBezierPath
         bezierPathWithRoundedRect:border_rect xRadius:9.0 yRadius:9.0];
-    NSColor *fill = [NSColor.controlBackgroundColor
-        colorWithAlphaComponent:0.52];
+    NSColor *fill = [NSColor.labelColor colorWithAlphaComponent:0.012];
     [fill setFill];
     [path fill];
-    [[NSColor.separatorColor colorWithAlphaComponent:0.42] setStroke];
-    path.lineWidth = 0.5;
+    [[NSColor.separatorColor colorWithAlphaComponent:0.18] setStroke];
+    path.lineWidth = 0.35;
     [path stroke];
 }
 
@@ -1235,6 +1234,10 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
         fill_layer.endPoint = CGPointMake(0.5, 0.0);
         fill_layer.cornerRadius = 7.0;
         fill_layer.borderWidth = 0.5;
+        fill_layer.shadowColor = NSColor.blackColor.CGColor;
+        fill_layer.shadowOpacity = 0.10;
+        fill_layer.shadowRadius = 1.25;
+        fill_layer.shadowOffset = CGSizeMake(0.0, -0.75);
         [self.layer addSublayer:fill_layer];
 
         title_layer = [CATextLayer layer];
@@ -1243,8 +1246,8 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
         title_layer.truncationMode = kCATruncationEnd;
         title_layer.wrapped = NO;
         title_layer.font = (__bridge CFTypeRef)
-            [NSFont systemFontOfSize:10.5 weight:NSFontWeightSemibold];
-        title_layer.fontSize = 10.5;
+            [NSFont systemFontOfSize:11.0 weight:NSFontWeightSemibold];
+        title_layer.fontSize = 11.0;
         [self.layer addSublayer:title_layer];
         [self setColor:NSColor.controlAccentColor intensity:1.0];
     }
@@ -1267,7 +1270,7 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     fill_layer.frame = self.bounds;
-    title_layer.frame = CGRectMake(4.0, 5.0,
+    title_layer.frame = CGRectMake(4.0, 5.25,
                                    NSWidth(self.bounds) - 8.0, 14.0);
     [CATransaction commit];
 }
@@ -1294,18 +1297,24 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     CGFloat rendered_green = preview_green * preview_intensity;
     CGFloat rendered_blue = preview_blue * preview_intensity;
 
-    CGFloat top_red = fmin(1.0, rendered_red * 1.04 + 0.012);
-    CGFloat top_green = fmin(1.0, rendered_green * 1.04 + 0.012);
-    CGFloat top_blue = fmin(1.0, rendered_blue * 1.04 + 0.012);
-    CGFloat bottom_red = rendered_red * 0.96;
-    CGFloat bottom_green = rendered_green * 0.96;
-    CGFloat bottom_blue = rendered_blue * 0.96;
+    CGFloat top_red = fmin(1.0, rendered_red * 1.12 + 0.018);
+    CGFloat top_green = fmin(1.0, rendered_green * 1.12 + 0.018);
+    CGFloat top_blue = fmin(1.0, rendered_blue * 1.12 + 0.018);
+    CGFloat middle_red = fmin(1.0, rendered_red * 1.025 + 0.004);
+    CGFloat middle_green = fmin(1.0, rendered_green * 1.025 + 0.004);
+    CGFloat middle_blue = fmin(1.0, rendered_blue * 1.025 + 0.004);
+    CGFloat bottom_red = rendered_red * 0.84;
+    CGFloat bottom_green = rendered_green * 0.84;
+    CGFloat bottom_blue = rendered_blue * 0.84;
     NSColor *top_color = [NSColor colorWithSRGBRed:top_red
                                              green:top_green
                                               blue:top_blue alpha:1.0];
     NSColor *bottom_color = [NSColor colorWithSRGBRed:bottom_red
                                                 green:bottom_green
                                                  blue:bottom_blue alpha:1.0];
+    NSColor *middle_color = [NSColor colorWithSRGBRed:middle_red
+                                                green:middle_green
+                                                 blue:middle_blue alpha:1.0];
 
     CGFloat luminance = rendered_red * 0.299 +
                         rendered_green * 0.587 +
@@ -1313,12 +1322,15 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     NSColor *text_color = luminance > 0.66 ? NSColor.blackColor
                                            : NSColor.whiteColor;
     NSColor *border_color = luminance > 0.66
-                                ? [NSColor colorWithWhite:0.0 alpha:0.10]
-                                : [NSColor colorWithWhite:1.0 alpha:0.16];
+                                ? [NSColor colorWithWhite:0.0 alpha:0.12]
+                                : [NSColor colorWithWhite:1.0 alpha:0.22];
 
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
-    fill_layer.colors = @[(id)top_color.CGColor, (id)bottom_color.CGColor];
+    fill_layer.colors = @[(id)top_color.CGColor,
+                          (id)middle_color.CGColor,
+                          (id)bottom_color.CGColor];
+    fill_layer.locations = @[@0.0, @0.48, @1.0];
     fill_layer.borderColor = border_color.CGColor;
     title_layer.foregroundColor = text_color.CGColor;
     [CATransaction commit];
@@ -1535,7 +1547,7 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     }
 
     light_settings_window = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, 328, 262)
+        initWithContentRect:NSMakeRect(0, 0, 328, 274)
                   styleMask:NSWindowStyleMaskTitled |
                             NSWindowStyleMaskClosable
                     backing:NSBackingStoreBuffered
@@ -1547,12 +1559,12 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
 
     NSView *content = light_settings_window.contentView;
     InsetGroupView *status_group = [[InsetGroupView alloc]
-        initWithFrame:NSMakeRect(8, 124, 312, 105)];
+        initWithFrame:NSMakeRect(10, 127, 308, 111)];
     [content addSubview:status_group];
 
     NSTextField *status_title =
         [NSTextField labelWithString:L("status.section", "Status")];
-    status_title.frame = NSMakeRect(14, 234, 150, 16);
+    status_title.frame = NSMakeRect(14, 246, 150, 16);
     status_title.font =
         [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];
     [content addSubview:status_title];
@@ -1573,21 +1585,22 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     for (NSInteger index = 0; index < 5; index++) {
         NSInteger column = index % 3;
         NSInteger row = index / 3;
-        CGFloat x = row == 0 ? 14 + column * 102
-                             : 65 + column * 102;
-        CGFloat y = 196 - row * 50;
+        CGFloat x = row == 0 ? 18 + column * 102
+                             : 69 + column * 102;
+        CGFloat y = 201 - row * 51;
 
         StatusPreviewView *card = [[StatusPreviewView alloc]
-            initWithFrame:NSMakeRect(x, y, 95, 25)
+            initWithFrame:NSMakeRect(x, y, 88, 25)
                     title:status_names[index]];
         [content addSubview:card];
         [cards addObject:card];
 
         NSTextField *effect = [NSTextField labelWithString:effect_names[index]];
-        effect.frame = NSMakeRect(x - 2, y - 17, 99, 13);
+        effect.frame = NSMakeRect(x - 4, y - 17, 96, 13);
         effect.alignment = NSTextAlignmentCenter;
-        effect.font = [NSFont systemFontOfSize:8.5];
-        effect.textColor = NSColor.secondaryLabelColor;
+        effect.font = [NSFont systemFontOfSize:9.0];
+        effect.textColor =
+            [NSColor.secondaryLabelColor colorWithAlphaComponent:0.90];
         [content addSubview:effect];
     }
     status_cards = [cards copy];
@@ -1598,6 +1611,10 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     scheme_label.font =
         [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];
     [content addSubview:scheme_label];
+
+    InsetGroupView *scheme_group = [[InsetGroupView alloc]
+        initWithFrame:NSMakeRect(10, 74, 308, 32)];
+    [content addSubview:scheme_group];
 
     scheme_control = [[NSSegmentedControl alloc]
         initWithFrame:NSMakeRect(14, 78, 300, 24)];
