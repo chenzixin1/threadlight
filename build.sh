@@ -2,7 +2,7 @@
 set -euo pipefail
 
 script_dir=${0:A:h}
-app_binary="${script_dir}/Feker Codex Bridge.app/Contents/MacOS/FekerCodexBridge"
+app_binary="${script_dir}/Threadlight.app/Contents/MacOS/Threadlight"
 mkdir -p "${app_binary:h}"
 cc -x objective-c -std=c11 -Wall -Wextra -Werror \
   "${script_dir}/feker_codex_bridge.c" \
@@ -12,8 +12,8 @@ cc -x objective-c -std=c11 -Wall -Wextra -Werror \
   -framework ServiceManagement \
   -o "${app_binary}"
 
-icon_source="${script_dir}/assets/FekerTaskLights.svg"
-resources_dir="${script_dir}/Feker Codex Bridge.app/Contents/Resources"
+icon_source="${script_dir}/assets/Threadlight.svg"
+resources_dir="${script_dir}/Threadlight.app/Contents/Resources"
 icon_work_dir=$(mktemp -d)
 trap 'rm -rf "$icon_work_dir"' EXIT
 iconset_dir="${icon_work_dir}/AppIcon.iconset"
@@ -28,4 +28,4 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$iconset_dir" -o "${resources_dir}/AppIcon.icns"
 
-echo "Built ${script_dir}/Feker Codex Bridge.app"
+echo "Built ${script_dir}/Threadlight.app"

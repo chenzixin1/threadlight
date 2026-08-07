@@ -154,8 +154,15 @@ static bool initialize_paths(void) {
     snprintf(application_support_dir, sizeof(application_support_dir),
              "%s/Application Support", library_dir);
     snprintf(logs_dir, sizeof(logs_dir), "%s/Logs", library_dir);
+    char legacy_app_support_dir[PATH_MAX];
     snprintf(app_support_dir, sizeof(app_support_dir),
+             "%s/Threadlight", application_support_dir);
+    snprintf(legacy_app_support_dir, sizeof(legacy_app_support_dir),
              "%s/Feker Codex Bridge", application_support_dir);
+    if (access(app_support_dir, F_OK) != 0 &&
+        access(legacy_app_support_dir, F_OK) == 0) {
+        (void)rename(legacy_app_support_dir, app_support_dir);
+    }
     snprintf(test_request_path, sizeof(test_request_path),
              "%s/test-request.tsv", app_support_dir);
     snprintf(task_lights_enabled_path, sizeof(task_lights_enabled_path),
@@ -165,7 +172,7 @@ static bool initialize_paths(void) {
     snprintf(brightness_path, sizeof(brightness_path),
              "%s/brightness.txt", app_support_dir);
     snprintf(database_path, sizeof(database_path), "%s/.codex/state_5.sqlite", home);
-    snprintf(log_path, sizeof(log_path), "%s/FekerCodexBridge.log", logs_dir);
+    snprintf(log_path, sizeof(log_path), "%s/Threadlight.log", logs_dir);
 
     return ensure_directory(library_dir) &&
            ensure_directory(application_support_dir) &&
@@ -425,22 +432,6 @@ static bool ensure_rgb_device(void) {
     }
     rgb_device = open_rgb_device();
     return rgb_device != NULL;
-}
-
-static bool qmk_device_present(void) {
-    struct hid_device_info *devices =
-        hid_enumerate(FEKER_QMK_VID, FEKER_QMK_PID);
-    bool found = false;
-    for (struct hid_device_info *item = devices; item != NULL;
-         item = item->next) {
-        if (item->usage_page == FEKER_QMK_USAGE_PAGE &&
-            item->usage == FEKER_QMK_USAGE) {
-            found = true;
-            break;
-        }
-    }
-    hid_free_enumeration(devices);
-    return found;
 }
 
 static int status_priority(slot_status_t status) {
@@ -1052,7 +1043,7 @@ static int run_daemon(void) {
     snprintf(lock_path, sizeof(lock_path), "%s/daemon.lock", app_support_dir);
     int lock_fd = open(lock_path, O_CREAT | O_RDWR, 0644);
     if (lock_fd < 0 || flock(lock_fd, LOCK_EX | LOCK_NB) != 0) {
-        log_line("INFO", "Feker Codex Bridge is already running.");
+        log_line("INFO", "Threadlight is already running.");
         if (lock_fd >= 0) {
             close(lock_fd);
         }
@@ -1124,7 +1115,7 @@ static int run_daemon(void) {
     sqlite3_close(database);
     flock(lock_fd, LOCK_UN);
     close(lock_fd);
-    log_line("STOP", "Feker Codex Bridge stopped.");
+    log_line("STOP", "Threadlight stopped.");
     return 0;
 }
 
@@ -1136,7 +1127,7 @@ static int test_status_color(slot_status_t status) {
 }
 
 #ifdef __OBJC__
-static NSImage *task_light_menu_icon(bool enabled) {
+static NSImage *threadlight_menu_icon(bool enabled) {
     NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(18.0, 18.0)];
     [image lockFocus];
 
@@ -1149,15 +1140,23 @@ static NSImage *task_light_menu_icon(bool enabled) {
     [keycap stroke];
 
     if (enabled) {
-        for (CGFloat x = 5.0; x <= 13.0; x += 4.0) {
-            [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(x - 1.0, 8.0,
-                                                               2.0, 2.0)] fill];
+        NSBezierPath *thread = [NSBezierPath bezierPath];
+        thread.lineWidth = 1.45;
+        thread.lineCapStyle = NSLineCapStyleRound;
+        thread.lineJoinStyle = NSLineJoinStyleRound;
+        [thread moveToPoint:NSMakePoint(4.5, 6.0)];
+        [thread curveToPoint:NSMakePoint(13.5, 11.5)
+               controlPoint1:NSMakePoint(7.0, 6.0)
+               controlPoint2:NSMakePoint(9.0, 12.0)];
+        [thread stroke];
+        for (NSValue *point_value in @[
+                 [NSValue valueWithPoint:NSMakePoint(4.5, 6.0)],
+                 [NSValue valueWithPoint:NSMakePoint(9.0, 9.0)],
+                 [NSValue valueWithPoint:NSMakePoint(13.5, 11.5)]]) {
+            NSPoint point = point_value.pointValue;
+            [[NSBezierPath bezierPathWithOvalInRect:
+                NSMakeRect(point.x - 1.05, point.y - 1.05, 2.1, 2.1)] fill];
         }
-        NSBezierPath *base = [NSBezierPath bezierPath];
-        base.lineWidth = 1.5;
-        [base moveToPoint:NSMakePoint(5.0, 5.5)];
-        [base lineToPoint:NSMakePoint(13.0, 5.5)];
-        [base stroke];
     } else {
         NSBezierPath *pause = [NSBezierPath bezierPath];
         pause.lineWidth = 1.8;
@@ -1173,8 +1172,57 @@ static NSImage *task_light_menu_icon(bool enabled) {
     return image;
 }
 
+static NSString *localized_string(NSString *key, NSString *fallback) {
+    NSBundle *bundle = [NSBundle mainBundle];
+    const char *language_override = getenv("FEKER_LANGUAGE");
+    if (language_override != NULL && language_override[0] != '\0') {
+        NSString *language = [NSString stringWithUTF8String:language_override];
+        NSString *path = [bundle pathForResource:language ofType:@"lproj"];
+        NSBundle *language_bundle = path == nil
+                                        ? nil
+                                        : [NSBundle bundleWithPath:path];
+        if (language_bundle != nil) {
+            bundle = language_bundle;
+        }
+    }
+    return [bundle localizedStringForKey:key value:fallback table:nil];
+}
+
+#define L(key, fallback) localized_string(@key, @fallback)
+
+@interface InsetGroupView : NSView
+@end
+
+@implementation InsetGroupView
+
+- (BOOL)isOpaque {
+    return NO;
+}
+
+- (void)viewDidChangeEffectiveAppearance {
+    [super viewDidChangeEffectiveAppearance];
+    [self setNeedsDisplay:YES];
+}
+
+- (void)drawRect:(NSRect)dirty_rect {
+    (void)dirty_rect;
+    NSRect border_rect = NSInsetRect(self.bounds, 0.25, 0.25);
+    NSBezierPath *path = [NSBezierPath
+        bezierPathWithRoundedRect:border_rect xRadius:9.0 yRadius:9.0];
+    NSColor *fill = [NSColor.labelColor colorWithAlphaComponent:0.012];
+    [fill setFill];
+    [path fill];
+    [[NSColor.separatorColor colorWithAlphaComponent:0.18] setStroke];
+    path.lineWidth = 0.35;
+    [path stroke];
+}
+
+@end
+
 @interface StatusPreviewView : NSView {
     NSString *preview_title;
+    CAGradientLayer *fill_layer;
+    CATextLayer *title_layer;
     CGFloat preview_red;
     CGFloat preview_green;
     CGFloat preview_blue;
@@ -1194,8 +1242,52 @@ static NSImage *task_light_menu_icon(bool enabled) {
         preview_green = 0.48;
         preview_blue = 0.95;
         preview_intensity = 1.0;
+        self.wantsLayer = YES;
+
+        fill_layer = [CAGradientLayer layer];
+        fill_layer.startPoint = CGPointMake(0.5, 1.0);
+        fill_layer.endPoint = CGPointMake(0.5, 0.0);
+        fill_layer.cornerRadius = 7.0;
+        fill_layer.borderWidth = 0.5;
+        fill_layer.shadowColor = NSColor.blackColor.CGColor;
+        fill_layer.shadowOpacity = 0.10;
+        fill_layer.shadowRadius = 1.25;
+        fill_layer.shadowOffset = CGSizeMake(0.0, -0.75);
+        [self.layer addSublayer:fill_layer];
+
+        title_layer = [CATextLayer layer];
+        title_layer.string = preview_title;
+        title_layer.alignmentMode = kCAAlignmentCenter;
+        title_layer.truncationMode = kCATruncationEnd;
+        title_layer.wrapped = NO;
+        title_layer.font = (__bridge CFTypeRef)
+            [NSFont systemFontOfSize:11.0 weight:NSFontWeightSemibold];
+        title_layer.fontSize = 11.0;
+        [self.layer addSublayer:title_layer];
+        [self setColor:NSColor.controlAccentColor intensity:1.0];
     }
     return self;
+}
+
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    CGFloat scale = self.window.screen.backingScaleFactor;
+    if (scale <= 0.0) {
+        scale = NSScreen.mainScreen.backingScaleFactor;
+    }
+    fill_layer.contentsScale = scale;
+    title_layer.contentsScale = scale;
+    [self setNeedsLayout:YES];
+}
+
+- (void)layout {
+    [super layout];
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    fill_layer.frame = self.bounds;
+    title_layer.frame = CGRectMake(4.0, 5.25,
+                                   NSWidth(self.bounds) - 8.0, 14.0);
+    [CATransaction commit];
 }
 
 - (void)setColor:(NSColor *)color intensity:(CGFloat)intensity {
@@ -1216,36 +1308,47 @@ static NSImage *task_light_menu_icon(bool enabled) {
     preview_green = green;
     preview_blue = blue;
     preview_intensity = next_intensity;
-    [self setNeedsDisplay:YES];
-}
+    CGFloat rendered_red = preview_red * preview_intensity;
+    CGFloat rendered_green = preview_green * preview_intensity;
+    CGFloat rendered_blue = preview_blue * preview_intensity;
 
-- (void)drawRect:(NSRect)dirty_rect {
-    (void)dirty_rect;
-    CGFloat red = preview_red * preview_intensity;
-    CGFloat green = preview_green * preview_intensity;
-    CGFloat blue = preview_blue * preview_intensity;
-    NSColor *fill = [NSColor colorWithSRGBRed:red green:green blue:blue alpha:1.0];
-    [fill setFill];
-    [[NSBezierPath bezierPathWithRoundedRect:self.bounds
-                                     xRadius:8.0 yRadius:8.0] fill];
+    CGFloat top_red = fmin(1.0, rendered_red * 1.12 + 0.018);
+    CGFloat top_green = fmin(1.0, rendered_green * 1.12 + 0.018);
+    CGFloat top_blue = fmin(1.0, rendered_blue * 1.12 + 0.018);
+    CGFloat middle_red = fmin(1.0, rendered_red * 1.025 + 0.004);
+    CGFloat middle_green = fmin(1.0, rendered_green * 1.025 + 0.004);
+    CGFloat middle_blue = fmin(1.0, rendered_blue * 1.025 + 0.004);
+    CGFloat bottom_red = rendered_red * 0.84;
+    CGFloat bottom_green = rendered_green * 0.84;
+    CGFloat bottom_blue = rendered_blue * 0.84;
+    NSColor *top_color = [NSColor colorWithSRGBRed:top_red
+                                             green:top_green
+                                              blue:top_blue alpha:1.0];
+    NSColor *bottom_color = [NSColor colorWithSRGBRed:bottom_red
+                                                green:bottom_green
+                                                 blue:bottom_blue alpha:1.0];
+    NSColor *middle_color = [NSColor colorWithSRGBRed:middle_red
+                                                green:middle_green
+                                                 blue:middle_blue alpha:1.0];
 
-    CGFloat luminance = red * 0.299 + green * 0.587 + blue * 0.114;
+    CGFloat luminance = rendered_red * 0.299 +
+                        rendered_green * 0.587 +
+                        rendered_blue * 0.114;
     NSColor *text_color = luminance > 0.66 ? NSColor.blackColor
                                            : NSColor.whiteColor;
-    NSMutableParagraphStyle *paragraph = [[NSMutableParagraphStyle alloc] init];
-    paragraph.alignment = NSTextAlignmentCenter;
-    NSDictionary *attributes = @{
-        NSFontAttributeName : [NSFont systemFontOfSize:12
-                                                weight:NSFontWeightMedium],
-        NSForegroundColorAttributeName : text_color,
-        NSParagraphStyleAttributeName : paragraph,
-    };
-    NSSize text_size = [preview_title sizeWithAttributes:attributes];
-    NSRect text_rect = NSMakeRect(0,
-                                  floor((NSHeight(self.bounds) -
-                                         text_size.height) / 2.0) - 0.5,
-                                  NSWidth(self.bounds), text_size.height + 2.0);
-    [preview_title drawInRect:text_rect withAttributes:attributes];
+    NSColor *border_color = luminance > 0.66
+                                ? [NSColor colorWithWhite:0.0 alpha:0.12]
+                                : [NSColor colorWithWhite:1.0 alpha:0.22];
+
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    fill_layer.colors = @[(id)top_color.CGColor,
+                          (id)middle_color.CGColor,
+                          (id)bottom_color.CGColor];
+    fill_layer.locations = @[@0.0, @0.48, @1.0];
+    fill_layer.borderColor = border_color.CGColor;
+    title_layer.foregroundColor = text_color.CGColor;
+    [CATransaction commit];
 }
 
 - (void)dealloc {
@@ -1259,7 +1362,6 @@ static NSImage *task_light_menu_icon(bool enabled) {
     NSStatusItem *status_item;
     NSMenu *status_menu;
     NSMenuItem *toggle_item;
-    NSMenuItem *device_item;
     NSMenuItem *scheme_items[COLOR_SCHEME_COUNT];
     NSMenuItem *test_menu_item;
     NSMenuItem *login_at_startup_item;
@@ -1286,27 +1388,25 @@ static NSImage *task_light_menu_icon(bool enabled) {
     status_item.button.title = @"";
     status_item.button.imagePosition = NSImageOnly;
 
-    status_menu = [[NSMenu alloc] initWithTitle:@"FEKER 任务灯"];
+    status_menu = [[NSMenu alloc] initWithTitle:L("app.menu_title", "Threadlight")];
     status_menu.delegate = self;
     toggle_item = [[NSMenuItem alloc]
-        initWithTitle:@"任务灯已开启" action:@selector(toggleTaskLights:)
+        initWithTitle:L("task_lights.on", "Task lights on")
+                action:@selector(toggleTaskLights:)
         keyEquivalent:@""];
     toggle_item.target = self;
     [status_menu addItem:toggle_item];
-
-    device_item = [[NSMenuItem alloc]
-        initWithTitle:@"正在检测键盘…" action:nil keyEquivalent:@""];
-    device_item.enabled = NO;
-    [status_menu addItem:device_item];
     [status_menu addItem:[NSMenuItem separatorItem]];
 
     NSMenuItem *scheme_menu_item = [[NSMenuItem alloc]
-        initWithTitle:@"配色方案" action:nil keyEquivalent:@""];
-    NSMenu *scheme_menu = [[NSMenu alloc] initWithTitle:@"配色方案"];
+        initWithTitle:L("scheme.title", "Color scheme")
+                action:nil keyEquivalent:@""];
+    NSMenu *scheme_menu = [[NSMenu alloc]
+        initWithTitle:L("scheme.title", "Color scheme")];
     NSArray<NSString *> *scheme_names = @[
-        @"Codex 默认",
-        @"海洋 Ocean",
-        @"紫罗兰 Violet",
+        L("scheme.codex", "Codex Default"),
+        L("scheme.ocean", "Ocean"),
+        L("scheme.violet", "Violet"),
     ];
     for (NSInteger index = 0; index < COLOR_SCHEME_COUNT; index++) {
         NSMenuItem *item = [[NSMenuItem alloc]
@@ -1322,21 +1422,25 @@ static NSImage *task_light_menu_icon(bool enabled) {
     [status_menu addItem:scheme_menu_item];
 
     NSMenuItem *light_settings_item = [[NSMenuItem alloc]
-        initWithTitle:@"灯光设置…" action:@selector(showLightSettings:)
+        initWithTitle:L("light_settings", "Light Settings…")
+                action:@selector(showLightSettings:)
         keyEquivalent:@""];
     light_settings_item.target = self;
     [status_menu addItem:light_settings_item];
 
     test_menu_item = [[NSMenuItem alloc]
-        initWithTitle:@"测试灯光" action:nil keyEquivalent:@""];
-    NSMenu *test_menu = [[NSMenu alloc] initWithTitle:@"测试灯光"];
+        initWithTitle:L("test.title", "Test Lights")
+                action:nil keyEquivalent:@""];
+    NSMenu *test_menu = [[NSMenu alloc]
+        initWithTitle:L("test.title", "Test Lights")];
     NSArray<NSArray *> *tests = @[
-        @[@"执行中（呼吸效果）", @(SLOT_WORKING)],
-        @[@"任务完成（呼吸两次后常亮）", @(SLOT_COMPLETE)],
-        @[@"等待操作", @(SLOT_WAITING)],
-        @[@"出错", @(SLOT_ERROR)],
-        @[@"空闲", @(SLOT_IDLE)],
-        @[@"熄灭测试灯", @(SLOT_OFF)],
+        @[L("test.working", "Working (breathing)"), @(SLOT_WORKING)],
+        @[L("test.complete", "Complete (two breaths, then solid)"),
+          @(SLOT_COMPLETE)],
+        @[L("test.waiting", "Waiting for input"), @(SLOT_WAITING)],
+        @[L("test.error", "Task failed"), @(SLOT_ERROR)],
+        @[L("test.idle", "Idle"), @(SLOT_IDLE)],
+        @[L("test.off", "Turn off test"), @(SLOT_OFF)],
     ];
     for (NSArray *test in tests) {
         NSMenuItem *item = [[NSMenuItem alloc]
@@ -1349,11 +1453,13 @@ static NSImage *task_light_menu_icon(bool enabled) {
     [status_menu addItem:test_menu_item];
 
     NSMenuItem *help_item = [[NSMenuItem alloc]
-        initWithTitle:@"使用说明" action:nil keyEquivalent:@""];
-    NSMenu *help_menu = [[NSMenu alloc] initWithTitle:@"使用说明"];
+        initWithTitle:L("help.title", "How It Works")
+                action:nil keyEquivalent:@""];
+    NSMenu *help_menu = [[NSMenu alloc]
+        initWithTitle:L("help.title", "How It Works")];
     NSArray<NSString *> *instructions = @[
-        @"左键或右键图标：打开菜单",
-        @"菜单第一项：开启或暂停任务灯",
+        L("help.open_menu", "Click the icon to open this menu"),
+        L("help.toggle", "Use the first item to pause task lights"),
     ];
     for (NSString *instruction in instructions) {
         NSMenuItem *item = [[NSMenuItem alloc]
@@ -1363,11 +1469,11 @@ static NSImage *task_light_menu_icon(bool enabled) {
     }
     [help_menu addItem:[NSMenuItem separatorItem]];
     NSArray<NSString *> *color_help = @[
-        @"执行中 — 当前配色的工作色呼吸",
-        @"任务完成 — 呼吸两次后常亮至下一任务",
-        @"等待操作 — 需要输入或批准",
-        @"出错 — 任务执行失败",
-        @"空闲 — 当前没有进行中的工作",
+        L("help.working", "Working — breathing work color"),
+        L("help.complete", "Complete — two breaths, then solid"),
+        L("help.waiting", "Waiting — input or approval needed"),
+        L("help.error", "Failed — the task could not finish"),
+        L("help.idle", "Idle — no task is running"),
     ];
     for (NSString *explanation in color_help) {
         NSMenuItem *item = [[NSMenuItem alloc]
@@ -1380,21 +1486,26 @@ static NSImage *task_light_menu_icon(bool enabled) {
 
     [status_menu addItem:[NSMenuItem separatorItem]];
     NSMenuItem *open_log = [[NSMenuItem alloc]
-        initWithTitle:@"查看运行日志…" action:@selector(openLog:) keyEquivalent:@""];
+        initWithTitle:L("log.open", "Open Log…")
+                action:@selector(openLog:) keyEquivalent:@""];
     open_log.target = self;
     [status_menu addItem:open_log];
 
     NSMenuItem *settings_item = [[NSMenuItem alloc]
-        initWithTitle:@"设置" action:nil keyEquivalent:@""];
-    NSMenu *settings_menu = [[NSMenu alloc] initWithTitle:@"设置"];
+        initWithTitle:L("settings.title", "Settings")
+                action:nil keyEquivalent:@""];
+    NSMenu *settings_menu = [[NSMenu alloc]
+        initWithTitle:L("settings.title", "Settings")];
     login_at_startup_item = [[NSMenuItem alloc]
-        initWithTitle:@"开机自动启动" action:@selector(toggleLoginAtStartup:)
+        initWithTitle:L("startup.title", "Launch at Login")
+                action:@selector(toggleLoginAtStartup:)
         keyEquivalent:@""];
     login_at_startup_item.target = self;
     [settings_menu addItem:login_at_startup_item];
     [settings_menu addItem:[NSMenuItem separatorItem]];
     NSMenuItem *open_login_items = [[NSMenuItem alloc]
-        initWithTitle:@"打开系统登录项设置…" action:@selector(openLoginItems:)
+        initWithTitle:L("startup.open_settings", "Open Login Items Settings…")
+                action:@selector(openLoginItems:)
         keyEquivalent:@""];
     open_login_items.target = self;
     [settings_menu addItem:open_login_items];
@@ -1402,14 +1513,16 @@ static NSImage *task_light_menu_icon(bool enabled) {
     [status_menu addItem:settings_item];
 
     NSMenuItem *project_home = [[NSMenuItem alloc]
-        initWithTitle:@"项目主页（GitHub）…" action:@selector(openProjectHome:)
+        initWithTitle:L("github.open", "Project on GitHub…")
+                action:@selector(openProjectHome:)
         keyEquivalent:@""];
     project_home.target = self;
     [status_menu addItem:project_home];
 
     [status_menu addItem:[NSMenuItem separatorItem]];
     NSMenuItem *quit_item = [[NSMenuItem alloc]
-        initWithTitle:@"退出 FEKER 任务灯" action:@selector(quit:)
+        initWithTitle:L("quit.title", "Quit Threadlight")
+                action:@selector(quit:)
         keyEquivalent:@"q"];
     quit_item.target = self;
     [status_menu addItem:quit_item];
@@ -1449,81 +1562,109 @@ static NSImage *task_light_menu_icon(bool enabled) {
     }
 
     light_settings_window = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, 408, 304)
+        initWithContentRect:NSMakeRect(0, 0, 328, 274)
                   styleMask:NSWindowStyleMaskTitled |
                             NSWindowStyleMaskClosable
                     backing:NSBackingStoreBuffered
                       defer:NO];
-    light_settings_window.title = @"任务灯设置";
+    light_settings_window.title = L("window.title", "Threadlight");
     light_settings_window.releasedWhenClosed = NO;
     light_settings_window.delegate = self;
     [light_settings_window center];
 
     NSView *content = light_settings_window.contentView;
-    NSTextField *status_title = [NSTextField labelWithString:@"状态灯说明"];
-    status_title.frame = NSMakeRect(18, 270, 180, 20);
-    status_title.font = [NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
+    InsetGroupView *status_group = [[InsetGroupView alloc]
+        initWithFrame:NSMakeRect(10, 127, 308, 111)];
+    [content addSubview:status_group];
+
+    NSTextField *status_title =
+        [NSTextField labelWithString:L("status.section", "Status")];
+    status_title.frame = NSMakeRect(14, 246, 150, 16);
+    status_title.font =
+        [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];
     [content addSubview:status_title];
 
     NSArray<NSString *> *status_names =
-        @[@"执行中", @"已完成", @"等待用户", @"任务失败", @"空闲"];
+        @[L("status.working", "Working"),
+          L("status.complete", "Complete"),
+          L("status.waiting", "Waiting"),
+          L("status.error", "Failed"),
+          L("status.idle", "Idle")];
     NSArray<NSString *> *effect_names =
-        @[@"呼吸", @"呼吸两次 → 常亮", @"慢闪", @"双闪 → 常亮",
-          @"恢复原灯效"];
+        @[L("effect.breathing", "Breathing"),
+          L("effect.two_breaths", "2 breaths → solid"),
+          L("effect.slow_pulse", "Slow pulse"),
+          L("effect.two_flashes", "2 flashes → solid"),
+          L("effect.restore", "Restore RGB")];
     NSMutableArray<StatusPreviewView *> *cards = [NSMutableArray array];
     for (NSInteger index = 0; index < 5; index++) {
         NSInteger column = index % 3;
         NSInteger row = index / 3;
-        CGFloat x = 18 + column * 126;
-        CGFloat y = 218 - row * 60;
+        CGFloat x = row == 0 ? 18 + column * 102
+                             : 69 + column * 102;
+        CGFloat y = 201 - row * 51;
 
         StatusPreviewView *card = [[StatusPreviewView alloc]
-            initWithFrame:NSMakeRect(x, y, 116, 30)
+            initWithFrame:NSMakeRect(x, y, 88, 25)
                     title:status_names[index]];
         [content addSubview:card];
         [cards addObject:card];
 
         NSTextField *effect = [NSTextField labelWithString:effect_names[index]];
-        effect.frame = NSMakeRect(x - 3, y - 20, 122, 16);
+        effect.frame = NSMakeRect(x - 4, y - 17, 96, 13);
         effect.alignment = NSTextAlignmentCenter;
-        effect.font = [NSFont systemFontOfSize:10];
-        effect.textColor = NSColor.secondaryLabelColor;
+        effect.font = [NSFont systemFontOfSize:9.0];
+        effect.textColor =
+            [NSColor.secondaryLabelColor colorWithAlphaComponent:0.90];
         [content addSubview:effect];
     }
     status_cards = [cards copy];
 
-    NSTextField *scheme_label = [NSTextField labelWithString:@"配色方案"];
-    scheme_label.frame = NSMakeRect(18, 108, 100, 18);
-    scheme_label.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
+    NSTextField *scheme_label =
+        [NSTextField labelWithString:L("scheme.title", "Color scheme")];
+    scheme_label.frame = NSMakeRect(14, 109, 140, 16);
+    scheme_label.font =
+        [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];
     [content addSubview:scheme_label];
 
+    InsetGroupView *scheme_group = [[InsetGroupView alloc]
+        initWithFrame:NSMakeRect(10, 74, 308, 32)];
+    [content addSubview:scheme_group];
+
     scheme_control = [[NSSegmentedControl alloc]
-        initWithFrame:NSMakeRect(18, 76, 372, 26)];
+        initWithFrame:NSMakeRect(14, 78, 300, 24)];
     scheme_control.segmentCount = 3;
     [scheme_control setLabel:@"Codex" forSegment:0];
     [scheme_control setLabel:@"Ocean" forSegment:1];
     [scheme_control setLabel:@"Violet" forSegment:2];
     scheme_control.segmentStyle = NSSegmentStyleRounded;
+    scheme_control.controlSize = NSControlSizeSmall;
+    scheme_control.font =
+        [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
     scheme_control.target = self;
     scheme_control.action = @selector(chooseSchemeFromSettings:);
     [content addSubview:scheme_control];
 
-    NSTextField *brightness_label = [NSTextField labelWithString:@"亮度"];
-    brightness_label.frame = NSMakeRect(18, 45, 70, 18);
-    brightness_label.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
+    NSTextField *brightness_label =
+        [NSTextField labelWithString:L("brightness.title", "Brightness")];
+    brightness_label.frame = NSMakeRect(14, 45, 110, 16);
+    brightness_label.font =
+        [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];
     [content addSubview:brightness_label];
 
     brightness_value_label = [NSTextField labelWithString:@"68%"];
-    brightness_value_label.frame = NSMakeRect(338, 45, 52, 18);
+    brightness_value_label.frame = NSMakeRect(266, 45, 48, 16);
     brightness_value_label.alignment = NSTextAlignmentRight;
+    brightness_value_label.font = [NSFont systemFontOfSize:11];
     brightness_value_label.textColor = NSColor.secondaryLabelColor;
     [content addSubview:brightness_value_label];
 
     brightness_slider = [[NSSlider alloc]
-        initWithFrame:NSMakeRect(18, 15, 372, 22)];
+        initWithFrame:NSMakeRect(14, 14, 300, 18)];
     brightness_slider.minValue = 20;
     brightness_slider.maxValue = 100;
     brightness_slider.continuous = YES;
+    brightness_slider.controlSize = NSControlSizeSmall;
     [brightness_slider sendActionOn:NSEventMaskLeftMouseDown |
                                    NSEventMaskLeftMouseDragged |
                                    NSEventMaskLeftMouseUp];
@@ -1674,7 +1815,9 @@ static NSImage *task_light_menu_icon(bool enabled) {
 }
 
 - (void)updateAppearance {
-    toggle_item.title = task_lights_enabled ? @"任务灯已开启" : @"任务灯已暂停";
+    toggle_item.title = task_lights_enabled
+                            ? L("task_lights.on", "Task lights on")
+                            : L("task_lights.off", "Task lights paused");
     toggle_item.state = task_lights_enabled ? NSControlStateValueOn
                                             : NSControlStateValueOff;
     test_menu_item.enabled = task_lights_enabled;
@@ -1691,10 +1834,10 @@ static NSImage *task_light_menu_icon(bool enabled) {
         brightness_value_label.stringValue =
             [NSString stringWithFormat:@"%u%%", light_brightness_percent];
     }
-    status_item.button.image = task_light_menu_icon(task_lights_enabled);
+    status_item.button.image = threadlight_menu_icon(task_lights_enabled);
     status_item.button.toolTip = task_lights_enabled
-                                     ? @"FEKER 任务灯已开启 · 点击打开菜单"
-                                     : @"FEKER 任务灯已暂停 · 点击打开菜单";
+                                     ? L("tooltip.on", "Threadlight is on · Click for menu")
+                                     : L("tooltip.off", "Threadlight is paused · Click for menu");
 
     if (@available(macOS 13.0, *)) {
         SMAppServiceStatus login_status = [SMAppService mainAppService].status;
@@ -1703,18 +1846,15 @@ static NSImage *task_light_menu_icon(bool enabled) {
                                           : NSControlStateValueOff;
         login_at_startup_item.title =
             login_status == SMAppServiceStatusRequiresApproval
-                ? @"开机自动启动（等待系统批准）"
-                : @"开机自动启动";
+                ? L("startup.requires_approval",
+                    "Launch at Login (approval required)")
+                : L("startup.title", "Launch at Login");
     } else {
         login_at_startup_item.enabled = NO;
-        login_at_startup_item.title = @"开机自动启动（需要 macOS 13）";
+        login_at_startup_item.title =
+            L("startup.requires_macos", "Launch at Login (requires macOS 13)");
     }
 
-    if (qmk_device_present()) {
-        device_item.title = @"FEKER QMK/VIA · 整板状态灯";
-    } else {
-        device_item.title = @"未检测到兼容的有线键盘";
-    }
 }
 
 - (void)menuWillOpen:(NSMenu *)menu {
@@ -1761,7 +1901,7 @@ static NSImage *task_light_menu_icon(bool enabled) {
 - (void)openLog:(id)sender {
     (void)sender;
     NSString *path = [NSHomeDirectory()
-        stringByAppendingPathComponent:@"Library/Logs/FekerCodexBridge.log"];
+        stringByAppendingPathComponent:@"Library/Logs/Threadlight.log"];
     [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:path]];
 }
 
@@ -1812,11 +1952,12 @@ static NSImage *task_light_menu_icon(bool enabled) {
     (void)sender;
     log_line("UI", "Menu action: request application quit.");
     NSAlert *alert = [[NSAlert alloc] init];
-    alert.messageText = @"退出 FEKER 任务灯？";
+    alert.messageText = L("quit.message", "Quit Threadlight?");
     alert.informativeText =
-        @"任务状态灯会停止，并恢复键盘原有灯效。";
-    [alert addButtonWithTitle:@"取消"];
-    [alert addButtonWithTitle:@"退出"];
+        L("quit.informative",
+          "Task lights will stop and the keyboard's original RGB effect will return.");
+    [alert addButtonWithTitle:L("quit.cancel", "Cancel")];
+    [alert addButtonWithTitle:L("quit.confirm", "Quit")];
     [NSApp activateIgnoringOtherApps:YES];
     if ([alert runModal] != NSAlertSecondButtonReturn) {
         log_line("UI", "Application quit cancelled.");
