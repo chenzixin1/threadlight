@@ -6,12 +6,12 @@
 </p>
 
 <p align="center">
-  <img src="assets/threadlight-breathing.gif" alt="Threadlight — Codex task status as whole-board keyboard light" width="100%">
+  <img src="assets/threadlight-hero-animated.gif" alt="Threadlight — Codex task status breathing across the whole keyboard" width="100%">
 </p>
 
 <p align="center">
   <a href="#中文">中文</a> · <a href="#english">English</a> ·
-  <a href="assets/threadlight-breathing.mp4">MP4 Demo</a> ·
+  <a href="assets/threadlight-hero-animated.mp4">MP4 Demo</a> ·
   <a href="assets/threadlight-hero-4k.jpg">4K Hero</a>
 </p>
 
@@ -126,8 +126,8 @@ brew install hidapi sqlite3 pkg-config
 构建并安装：
 
 ```zsh
-git clone https://github.com/chenzixin1/feker-codex-bridge.git
-cd feker-codex-bridge
+git clone https://github.com/chenzixin1/threadlight.git
+cd threadlight
 ./install-service.command
 ```
 
@@ -293,8 +293,8 @@ brew install hidapi sqlite3 pkg-config
 Build and install:
 
 ```zsh
-git clone https://github.com/chenzixin1/feker-codex-bridge.git
-cd feker-codex-bridge
+git clone https://github.com/chenzixin1/threadlight.git
+cd threadlight
 ./install-service.command
 ```
 

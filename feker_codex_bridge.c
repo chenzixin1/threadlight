@@ -1942,7 +1942,7 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     (void)sender;
     log_line("UI", "Menu action: open the GitHub project page.");
     NSURL *url = [NSURL
-        URLWithString:@"https://github.com/chenzixin1/feker-codex-bridge"];
+        URLWithString:@"https://github.com/chenzixin1/threadlight"];
     if (url != nil) {
         [[NSWorkspace sharedWorkspace] openURL:url];
     }
