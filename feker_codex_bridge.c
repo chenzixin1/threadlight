@@ -1191,6 +1191,36 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
 
 #define L(key, fallback) localized_string(@key, @fallback)
 
+@interface InsetGroupView : NSView
+@end
+
+@implementation InsetGroupView
+
+- (BOOL)isOpaque {
+    return NO;
+}
+
+- (void)viewDidChangeEffectiveAppearance {
+    [super viewDidChangeEffectiveAppearance];
+    [self setNeedsDisplay:YES];
+}
+
+- (void)drawRect:(NSRect)dirty_rect {
+    (void)dirty_rect;
+    NSRect border_rect = NSInsetRect(self.bounds, 0.25, 0.25);
+    NSBezierPath *path = [NSBezierPath
+        bezierPathWithRoundedRect:border_rect xRadius:9.0 yRadius:9.0];
+    NSColor *fill = [NSColor.controlBackgroundColor
+        colorWithAlphaComponent:0.52];
+    [fill setFill];
+    [path fill];
+    [[NSColor.separatorColor colorWithAlphaComponent:0.42] setStroke];
+    path.lineWidth = 0.5;
+    [path stroke];
+}
+
+@end
+
 @interface StatusPreviewView : NSView {
     NSString *preview_title;
     CAGradientLayer *fill_layer;
@@ -1539,6 +1569,10 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     [light_settings_window center];
 
     NSView *content = light_settings_window.contentView;
+    InsetGroupView *status_group = [[InsetGroupView alloc]
+        initWithFrame:NSMakeRect(8, 124, 312, 105)];
+    [content addSubview:status_group];
+
     NSTextField *status_title =
         [NSTextField labelWithString:L("status.section", "Status")];
     status_title.frame = NSMakeRect(14, 234, 150, 16);
