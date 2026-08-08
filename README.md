@@ -104,14 +104,6 @@ Codex 现在作为专门的开发体验集成在 macOS ChatGPT 桌面应用中�
 
 官方说明：[ChatGPT 桌面应用快速开始](https://learn.chatgpt.com/docs/quickstart) 与 [Codex 最佳实践](https://learn.chatgpt.com/docs/codex/best-practices)。
 
-Threadlight 不需要以下设置：
-
-- 不需要 `~/.codex/hooks.json`
-- 不需要 `Command + 1…9`、`Option + 数字`或其他任务切换快捷键
-- 不需要 Karabiner
-- 不需要“输入监控”权限
-- 不需要 OpenAI API Key
-
 Threadlight 读取的是当前桌面应用的本地数据库和 rollout 格式，而不是稳定的公开 API。Codex 更新后，本项目可能需要同步适配。
 
 ## 安装
