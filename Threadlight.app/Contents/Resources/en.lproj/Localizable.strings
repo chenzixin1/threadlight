@@ -1,6 +1,10 @@
 "app.menu_title" = "Threadlight";
 "task_lights.on" = "Task lights on";
 "task_lights.off" = "Task lights paused";
+"scope.title" = "Lighting Scope";
+"scope.whole_board.short" = "Whole Keyboard";
+"scope.number_keys.short" = "Keys 1–9";
+"scope.rgb9_note" = "Tip: Number Keys 1–9 requires Threadlight RGB9 v0.2+ firmware on a tri-mode Alice80.";
 "scheme.title" = "Color Scheme";
 "scheme.codex" = "Codex Default";
 "scheme.ocean" = "Ocean";
@@ -18,6 +22,8 @@
 "help.title" = "How It Works";
 "help.open_menu" = "Click the icon to open this menu";
 "help.toggle" = "Use the first item to pause task lights";
+"help.scope_board" = "Whole Keyboard — highest-priority task";
+"help.scope_keys" = "Keys 1–9 — one task per key; other keys dark";
 "help.working" = "Working — breathing work color";
 "help.complete" = "Complete — two breaths, then solid";
 "help.waiting" = "Waiting — input or approval needed";

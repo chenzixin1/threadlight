@@ -35,6 +35,9 @@
 #define FEKER_QMK_USAGE_PAGE 0xFF60
 #define FEKER_QMK_USAGE 0x0061
 #define QMK_REPORT_SIZE 32
+#define RGB9_COMMAND 0xB0
+#define RGB9_INDICATOR_COUNT 9
+#define RGB9_FLAG_FOCUS 0x01
 #define DAEMON_TICK_INTERVAL_US 33333
 #define EVENT_POLL_TICK_COUNT 3
 #define THREAD_DISCOVERY_TICK_COUNT 60
@@ -70,11 +73,18 @@ typedef enum {
     COLOR_SCHEME_COUNT,
 } color_scheme_t;
 
+typedef enum {
+    LIGHTING_SCOPE_WHOLE_BOARD = 0,
+    LIGHTING_SCOPE_NUMBER_KEYS,
+    LIGHTING_SCOPE_COUNT,
+} lighting_scope_t;
+
 typedef struct {
     char thread_id[64];
     char rollout_path[PATH_MAX];
     char title[MAX_TITLE];
     off_t offset;
+    int slot;
     slot_status_t status;
     time_t touched_at;
     bool initialized;
@@ -87,6 +97,12 @@ static size_t watched_count = 0;
 static bool hid_permission_warning_printed = false;
 static hid_device *rgb_device = NULL;
 static bool qmk_generation_warning_printed = false;
+static bool rgb9_capability_checked = false;
+static bool rgb9_supported = false;
+static uint8_t rgb9_capability_flags = 0;
+static bool rgb9_overlay_active = false;
+static bool rgb9_requirement_warning_printed = false;
+static bool rgb9_focus_warning_printed = false;
 static bool qmk_original_saved = false;
 static uint8_t qmk_original_brightness = 0;
 static uint8_t qmk_original_effect = 0;
@@ -98,6 +114,7 @@ static int qmk_applied_brightness = -1;
 static char app_support_dir[PATH_MAX];
 static char test_request_path[PATH_MAX];
 static char task_lights_enabled_path[PATH_MAX];
+static char lighting_scope_path[PATH_MAX];
 static char color_scheme_path[PATH_MAX];
 static char brightness_path[PATH_MAX];
 static char database_path[PATH_MAX];
@@ -106,10 +123,12 @@ static char executable_path[PATH_MAX];
 static slot_status_t test_status = SLOT_OFF;
 static time_t test_override_until = 0;
 static bool task_lights_enabled = true;
+static lighting_scope_t lighting_scope = LIGHTING_SCOPE_WHOLE_BOARD;
 static color_scheme_t color_scheme = COLOR_SCHEME_CODEX;
 static uint8_t light_brightness_percent = 68;
 static double animation_started_at = 0.0;
 static slot_status_t rendered_status = SLOT_OFF;
+static slot_status_t rendered_number_key_statuses[RGB9_INDICATOR_COUNT];
 static bool completion_latched = false;
 
 static void handle_signal(int signal_number) {
@@ -168,6 +187,8 @@ static bool initialize_paths(void) {
              "%s/test-request.tsv", app_support_dir);
     snprintf(task_lights_enabled_path, sizeof(task_lights_enabled_path),
              "%s/task-lights-enabled.txt", app_support_dir);
+    snprintf(lighting_scope_path, sizeof(lighting_scope_path),
+             "%s/lighting-scope.txt", app_support_dir);
     snprintf(color_scheme_path, sizeof(color_scheme_path),
              "%s/color-scheme.txt", app_support_dir);
     snprintf(brightness_path, sizeof(brightness_path),
@@ -269,8 +290,7 @@ static hid_device *open_rgb_device(void) {
         hid_permission_warning_printed = false;
         if (!qmk_generation_warning_printed) {
             log_line("DEVICE",
-                     "FEKER QMK/VIA keyboard detected; using whole-keyboard "
-                     "status colors.");
+                     "FEKER QMK/VIA keyboard detected; task-light output is available.");
             qmk_generation_warning_printed = true;
         }
     }
@@ -319,6 +339,72 @@ static bool qmk_set_menu_value(hid_device *device, uint8_t menu_command,
     memcpy(&request[2], values, value_count);
     uint8_t response[QMK_REPORT_SIZE];
     return qmk_exchange(device, 0x07, request, value_count + 2, response);
+}
+
+static bool qmk_rgb9_has_capability(void) {
+    if (rgb9_capability_checked) {
+        return rgb9_supported;
+    }
+    rgb9_capability_checked = true;
+    uint8_t subcommand = 0x00;
+    uint8_t response[QMK_REPORT_SIZE];
+    rgb9_supported = qmk_exchange(rgb_device, RGB9_COMMAND,
+                                  &subcommand, 1, response) &&
+                     response[1] == 0x00 &&
+                     response[2] == 0x01 &&
+                     response[3] == RGB9_INDICATOR_COUNT &&
+                     response[4] == 0x01 &&
+                     response[5] == QMK_REPORT_SIZE;
+    if (rgb9_supported) {
+        rgb9_capability_flags = response[6];
+        log_line("DEVICE",
+                 "Threadlight RGB9 firmware detected; number-key lighting is available.");
+    }
+    return rgb9_supported;
+}
+
+static bool qmk_rgb9_set_colors(uint16_t mask,
+                                const rgb_t colors[RGB9_INDICATOR_COUNT],
+                                uint8_t flags) {
+    if (!qmk_rgb9_has_capability()) {
+        return false;
+    }
+    uint8_t payload[4 + RGB9_INDICATOR_COUNT * 3];
+    payload[0] = 0x04;
+    payload[1] = (uint8_t)(mask & 0xFF);
+    payload[2] = (uint8_t)(mask >> 8);
+    for (int index = 0; index < RGB9_INDICATOR_COUNT; index++) {
+        payload[3 + index * 3] = colors[index].r;
+        payload[4 + index * 3] = colors[index].g;
+        payload[5 + index * 3] = colors[index].b;
+    }
+    payload[3 + RGB9_INDICATOR_COUNT * 3] = flags;
+    uint8_t response[QMK_REPORT_SIZE];
+    bool ok = qmk_exchange(rgb_device, RGB9_COMMAND, payload,
+                           sizeof(payload), response) &&
+              response[1] == 0x04 && response[2] == 0x00 &&
+              response[3] == (uint8_t)(mask & 0xFF) &&
+              response[4] == (uint8_t)(mask >> 8);
+    if (ok) {
+        rgb9_overlay_active = mask != 0 || flags != 0;
+    }
+    return ok;
+}
+
+static bool qmk_rgb9_clear(void) {
+    if (!rgb9_overlay_active || rgb_device == NULL) {
+        return true;
+    }
+    uint8_t subcommand = 0x03;
+    uint8_t response[QMK_REPORT_SIZE];
+    bool ok = qmk_exchange(rgb_device, RGB9_COMMAND,
+                           &subcommand, 1, response) &&
+              response[1] == 0x03 && response[2] == 0x00 &&
+              response[3] == 0x00 && response[4] == 0x00;
+    if (ok) {
+        rgb9_overlay_active = false;
+    }
+    return ok;
 }
 
 static void rgb_to_hsv(rgb_t color, uint8_t *hue,
@@ -424,10 +510,15 @@ static void close_rgb_device(bool end_direct_mode) {
         return;
     }
     if (end_direct_mode) {
+        (void)qmk_rgb9_clear();
         restore_qmk_original();
     }
     hid_close(rgb_device);
     rgb_device = NULL;
+    rgb9_capability_checked = false;
+    rgb9_supported = false;
+    rgb9_capability_flags = 0;
+    rgb9_overlay_active = false;
     qmk_original_saved = false;
     qmk_task_mode_configured = false;
     qmk_applied_brightness = -1;
@@ -542,7 +633,36 @@ static uint8_t animation_scale_for_status(slot_status_t status,
     return scale;
 }
 
-static bool apply_status_color(slot_status_t status) {
+static rgb_t animated_color_for_status(slot_status_t status,
+                                       double elapsed_seconds) {
+    rgb_t color = base_color_for_status(color_scheme, status);
+    uint8_t animation_scale =
+        animation_scale_for_status(status, elapsed_seconds);
+    uint32_t combined_scale =
+        (uint32_t)animation_scale * light_brightness_percent;
+    color.r = (uint8_t)(((uint32_t)color.r * combined_scale + 12750) /
+                        25500);
+    color.g = (uint8_t)(((uint32_t)color.g * combined_scale + 12750) /
+                        25500);
+    color.b = (uint8_t)(((uint32_t)color.b * combined_scale + 12750) /
+                        25500);
+    return color;
+}
+
+static void collect_number_key_statuses(
+    slot_status_t statuses[RGB9_INDICATOR_COUNT]) {
+    for (int index = 0; index < RGB9_INDICATOR_COUNT; index++) {
+        statuses[index] = SLOT_OFF;
+    }
+    for (size_t index = 0; index < watched_count; index++) {
+        if (watched[index].active && watched[index].slot >= 1 &&
+            watched[index].slot <= RGB9_INDICATOR_COUNT) {
+            statuses[watched[index].slot - 1] = watched[index].status;
+        }
+    }
+}
+
+static bool apply_whole_board_status(slot_status_t status) {
     if (status == SLOT_IDLE || status == SLOT_OFF) {
         close_rgb_device(true);
         return true;
@@ -563,42 +683,120 @@ static bool apply_status_color(slot_status_t status) {
     return ok;
 }
 
+static bool apply_number_key_statuses(
+    const slot_status_t statuses[RGB9_INDICATOR_COUNT]) {
+    uint16_t mask = 0;
+    rgb_t colors[RGB9_INDICATOR_COUNT];
+    memset(colors, 0, sizeof(colors));
+    double elapsed_seconds = monotonic_seconds() - animation_started_at;
+    for (int index = 0; index < RGB9_INDICATOR_COUNT; index++) {
+        if (statuses[index] == SLOT_OFF) {
+            continue;
+        }
+        mask |= (uint16_t)(1U << index);
+        colors[index] = animated_color_for_status(statuses[index],
+                                                  elapsed_seconds);
+    }
+    if (!ensure_rgb_device()) {
+        return false;
+    }
+    if (!qmk_rgb9_has_capability()) {
+        if (!rgb9_requirement_warning_printed) {
+            log_line("ERROR",
+                     "Number-key lighting requires Threadlight RGB9 firmware for this Alice80.");
+            rgb9_requirement_warning_printed = true;
+        }
+        close_rgb_device(false);
+        return false;
+    }
+    uint8_t flags = 0;
+    if ((rgb9_capability_flags & RGB9_FLAG_FOCUS) != 0) {
+        flags |= RGB9_FLAG_FOCUS;
+        rgb9_focus_warning_printed = false;
+    } else if (!rgb9_focus_warning_printed) {
+        log_line("NOTICE",
+                 "Installed RGB9 firmware does not support focus blackout; "
+                 "using the safe nine-key overlay until v0.2.0 is installed.");
+        rgb9_focus_warning_printed = true;
+    }
+    bool ok = qmk_rgb9_set_colors(mask, colors, flags);
+    if (!ok) {
+        log_line("ERROR", "FEKER did not acknowledge the RGB9 update.");
+        close_rgb_device(true);
+        return false;
+    }
+    rgb9_requirement_warning_printed = false;
+    return true;
+}
+
 static void refresh_lights(void) {
     if (!task_lights_enabled) {
         close_rgb_device(true);
         return;
     }
-    slot_status_t status;
-    if (test_override_until > time(NULL)) {
-        status = test_status;
-    } else {
-        if (test_override_until != 0) {
-            test_override_until = 0;
-        }
-        status = aggregate_watched_status();
+    bool testing = test_override_until > time(NULL);
+    if (!testing && test_override_until != 0) {
+        test_override_until = 0;
     }
-    if (status != rendered_status) {
-        rendered_status = status;
+    if (lighting_scope == LIGHTING_SCOPE_WHOLE_BOARD) {
+        slot_status_t status = testing ? test_status
+                                       : aggregate_watched_status();
+        if (status != rendered_status) {
+            rendered_status = status;
+            animation_started_at = monotonic_seconds();
+        }
+        apply_whole_board_status(status);
+        return;
+    }
+
+    slot_status_t statuses[RGB9_INDICATOR_COUNT];
+    if (testing) {
+        for (int index = 0; index < RGB9_INDICATOR_COUNT; index++) {
+            statuses[index] = test_status;
+        }
+    } else {
+        collect_number_key_statuses(statuses);
+    }
+    if (memcmp(statuses, rendered_number_key_statuses,
+               sizeof(statuses)) != 0) {
+        memcpy(rendered_number_key_statuses, statuses, sizeof(statuses));
         animation_started_at = monotonic_seconds();
     }
-    apply_status_color(status);
+    apply_number_key_statuses(statuses);
 }
 
 static bool status_animation_needs_tick(void) {
     if (!task_lights_enabled || rgb_device == NULL) {
         return false;
     }
-    slot_status_t status;
-    if (test_override_until > time(NULL)) {
-        status = test_status;
-    } else {
-        status = aggregate_watched_status();
-    }
     double elapsed_seconds = monotonic_seconds() - animation_started_at;
-    return status == SLOT_WORKING || status == SLOT_WAITING ||
-           (status == SLOT_COMPLETE &&
-            elapsed_seconds < COMPLETE_BREATH_TOTAL_SECONDS) ||
-           (status == SLOT_ERROR && elapsed_seconds < ERROR_ALERT_SECONDS);
+    if (lighting_scope == LIGHTING_SCOPE_WHOLE_BOARD) {
+        slot_status_t status = test_override_until > time(NULL)
+                                   ? test_status
+                                   : aggregate_watched_status();
+        return status == SLOT_WORKING || status == SLOT_WAITING ||
+               (status == SLOT_COMPLETE &&
+                elapsed_seconds < COMPLETE_BREATH_TOTAL_SECONDS) ||
+               (status == SLOT_ERROR && elapsed_seconds < ERROR_ALERT_SECONDS);
+    }
+    slot_status_t statuses[RGB9_INDICATOR_COUNT];
+    if (test_override_until > time(NULL)) {
+        for (int index = 0; index < RGB9_INDICATOR_COUNT; index++) {
+            statuses[index] = test_status;
+        }
+    } else {
+        collect_number_key_statuses(statuses);
+    }
+    for (int index = 0; index < RGB9_INDICATOR_COUNT; index++) {
+        slot_status_t status = statuses[index];
+        if (status == SLOT_WORKING || status == SLOT_WAITING ||
+            (status == SLOT_COMPLETE &&
+             elapsed_seconds < COMPLETE_BREATH_TOTAL_SECONDS) ||
+            (status == SLOT_ERROR && elapsed_seconds < ERROR_ALERT_SECONDS)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static bool write_atomic_test_request(slot_status_t status) {
@@ -641,7 +839,7 @@ static void update_thread_status(watched_thread_t *item, slot_status_t status) {
                               status == SLOT_IDLE ? "idle" :
                               status == SLOT_WAITING ? "waiting" :
                               status == SLOT_ERROR ? "error" : "off";
-    snprintf(message, sizeof(message), "Task -> %s: %s",
+    snprintf(message, sizeof(message), "Task %d -> %s: %s", item->slot,
              status_name, item->title[0] != '\0' ? item->title : item->thread_id);
     log_line("TASK", message);
     refresh_lights();
@@ -784,11 +982,15 @@ static void discover_threads(sqlite3 *database) {
 
     size_t previous_count = watched_count;
     bool previous_active[MAX_THREADS];
+    int previous_slots[MAX_THREADS];
     for (size_t index = 0; index < watched_count; index++) {
         previous_active[index] = watched[index].active;
+        previous_slots[index] = watched[index].slot;
         watched[index].active = false;
+        watched[index].slot = 0;
     }
 
+    int visible_position = 0;
     while (sqlite3_step(statement) == SQLITE_ROW) {
         const char *thread_id = (const char *)sqlite3_column_text(statement, 0);
         const char *path = (const char *)sqlite3_column_text(statement, 1);
@@ -811,13 +1013,19 @@ static void discover_threads(sqlite3 *database) {
             initialize_rollout_position(item);
         }
         item->active = true;
+        visible_position++;
+        if (visible_position <= RGB9_INDICATOR_COUNT) {
+            item->slot = visible_position;
+        }
     }
     sqlite3_finalize(statement);
 
     bool active_changed = watched_count != previous_count;
     for (size_t index = 0; !active_changed && index < watched_count; index++) {
         bool previous = index < previous_count ? previous_active[index] : false;
-        active_changed = watched[index].active != previous;
+        int previous_slot = index < previous_count ? previous_slots[index] : 0;
+        active_changed = watched[index].active != previous ||
+                         watched[index].slot != previous_slot;
     }
     if (active_changed) {
         refresh_lights();
@@ -839,6 +1047,61 @@ static bool file_changed(const char *path, struct timespec *last_mtime) {
         return false;
     }
     *last_mtime = current;
+    return true;
+}
+
+static const char *lighting_scope_identifier(lighting_scope_t scope) {
+    return scope == LIGHTING_SCOPE_NUMBER_KEYS ? "number-keys"
+                                               : "whole-board";
+}
+
+static bool parse_lighting_scope(const char *value,
+                                 lighting_scope_t *scope) {
+    if (strcmp(value, "whole-board") == 0 || strcmp(value, "keyboard") == 0) {
+        *scope = LIGHTING_SCOPE_WHOLE_BOARD;
+        return true;
+    }
+    if (strcmp(value, "number-keys") == 0 || strcmp(value, "per-key") == 0 ||
+        strcmp(value, "1-9") == 0) {
+        *scope = LIGHTING_SCOPE_NUMBER_KEYS;
+        return true;
+    }
+    return false;
+}
+
+static bool load_lighting_scope(void) {
+    FILE *file = fopen(lighting_scope_path, "r");
+    if (file == NULL) {
+        lighting_scope = LIGHTING_SCOPE_WHOLE_BOARD;
+        return errno == ENOENT;
+    }
+    char value[32] = {0};
+    bool read_ok = fgets(value, sizeof(value), file) != NULL;
+    fclose(file);
+    if (!read_ok) {
+        return false;
+    }
+    value[strcspn(value, "\r\n")] = '\0';
+    return parse_lighting_scope(value, &lighting_scope);
+}
+
+static bool save_lighting_scope(lighting_scope_t scope) {
+    if (scope < 0 || scope >= LIGHTING_SCOPE_COUNT) {
+        return false;
+    }
+    char temporary_path[PATH_MAX];
+    snprintf(temporary_path, sizeof(temporary_path), "%s.%ld.tmp",
+             lighting_scope_path, (long)getpid());
+    FILE *file = fopen(temporary_path, "w");
+    if (file == NULL) {
+        return false;
+    }
+    fprintf(file, "%s\n", lighting_scope_identifier(scope));
+    if (fclose(file) != 0 || rename(temporary_path, lighting_scope_path) != 0) {
+        unlink(temporary_path);
+        return false;
+    }
+    lighting_scope = scope;
     return true;
 }
 
@@ -993,6 +1256,28 @@ static void process_task_lights_enabled(struct timespec *last_mtime) {
     refresh_lights();
 }
 
+static void process_lighting_scope(struct timespec *last_mtime) {
+    if (!file_changed(lighting_scope_path, last_mtime)) {
+        return;
+    }
+    lighting_scope_t previous = lighting_scope;
+    if (!load_lighting_scope()) {
+        log_line("ERROR", "Ignoring an invalid lighting-scope setting.");
+        return;
+    }
+    if (lighting_scope == previous) {
+        return;
+    }
+    close_rgb_device(true);
+    rendered_status = SLOT_OFF;
+    memset(rendered_number_key_statuses, 0,
+           sizeof(rendered_number_key_statuses));
+    log_line("MODE", lighting_scope == LIGHTING_SCOPE_WHOLE_BOARD
+                         ? "Whole-keyboard lighting scope enabled."
+                         : "Number-key 1-9 lighting scope enabled.");
+    refresh_lights();
+}
+
 static void process_color_scheme(struct timespec *last_mtime) {
     if (!file_changed(color_scheme_path, last_mtime)) {
         return;
@@ -1003,7 +1288,7 @@ static void process_color_scheme(struct timespec *last_mtime) {
         return;
     }
     if (color_scheme != previous) {
-        log_line("MODE", "Whole-board color scheme changed.");
+        log_line("MODE", "Task-light color scheme changed.");
         refresh_lights();
     }
 }
@@ -1018,7 +1303,7 @@ static void process_brightness(struct timespec *last_mtime) {
         return;
     }
     if (light_brightness_percent != previous) {
-        log_line("MODE", "Whole-board brightness changed.");
+        log_line("MODE", "Task-light brightness changed.");
         refresh_lights();
     }
 }
@@ -1073,6 +1358,10 @@ static int run_daemon(void) {
         log_line("ERROR", "Unable to read the saved task-light state; enabling it.");
         task_lights_enabled = true;
     }
+    if (!load_lighting_scope()) {
+        log_line("ERROR", "Unable to read lighting scope; using whole keyboard.");
+        lighting_scope = LIGHTING_SCOPE_WHOLE_BOARD;
+    }
     if (!load_color_scheme()) {
         log_line("ERROR", "Unable to read the color scheme; using Codex colors.");
         color_scheme = COLOR_SCHEME_CODEX;
@@ -1081,11 +1370,14 @@ static int run_daemon(void) {
         log_line("ERROR", "Unable to read brightness; using 68 percent.");
         light_brightness_percent = 68;
     }
-    log_line("READY", "Watching Codex task status for whole-board lighting.");
+    log_line("READY", lighting_scope == LIGHTING_SCOPE_WHOLE_BOARD
+                          ? "Watching Codex task status on the whole keyboard."
+                          : "Watching the first nine Codex tasks on number keys 1-9.");
     refresh_lights();
 
     unsigned int ticks = 0;
     struct timespec enabled_mtime = {0, 0};
+    struct timespec scope_mtime = {0, 0};
     struct timespec scheme_mtime = {0, 0};
     struct timespec brightness_mtime = {0, 0};
     struct timespec test_mtime = {0, 0};
@@ -1103,6 +1395,7 @@ static int run_daemon(void) {
                 }
             }
             process_task_lights_enabled(&enabled_mtime);
+            process_lighting_scope(&scope_mtime);
             process_color_scheme(&scheme_mtime);
             process_brightness(&brightness_mtime);
             process_test_request(&test_mtime);
@@ -1127,10 +1420,18 @@ static int run_daemon(void) {
 }
 
 static int test_status_color(slot_status_t status) {
+    (void)load_lighting_scope();
     (void)load_color_scheme();
     (void)load_brightness();
     animation_started_at = monotonic_seconds();
-    return apply_status_color(status) ? 0 : 1;
+    if (lighting_scope == LIGHTING_SCOPE_WHOLE_BOARD) {
+        return apply_whole_board_status(status) ? 0 : 1;
+    }
+    slot_status_t statuses[RGB9_INDICATOR_COUNT];
+    for (int index = 0; index < RGB9_INDICATOR_COUNT; index++) {
+        statuses[index] = status;
+    }
+    return apply_number_key_statuses(statuses) ? 0 : 1;
 }
 
 #ifdef __OBJC__
@@ -1373,6 +1674,7 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     NSMenuItem *test_menu_item;
     NSMenuItem *login_at_startup_item;
     NSWindow *light_settings_window;
+    NSSegmentedControl *scope_control;
     NSSegmentedControl *scheme_control;
     NSSlider *brightness_slider;
     NSTextField *brightness_value_label;
@@ -1467,6 +1769,8 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     NSArray<NSString *> *instructions = @[
         L("help.open_menu", "Click the icon to open this menu"),
         L("help.toggle", "Use the first item to pause task lights"),
+        L("help.scope_board", "Whole Keyboard — highest-priority task"),
+        L("help.scope_keys", "Keys 1–9 — first nine recent tasks"),
     ];
     for (NSString *instruction in instructions) {
         NSMenuItem *item = [[NSMenuItem alloc]
@@ -1536,6 +1840,7 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
 
     status_item.menu = status_menu;
     (void)load_task_lights_enabled();
+    (void)load_lighting_scope();
     (void)load_color_scheme();
     (void)load_brightness();
     [self updateAppearance];
@@ -1569,7 +1874,7 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     }
 
     light_settings_window = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, 328, 274)
+        initWithContentRect:NSMakeRect(0, 0, 328, 360)
                   styleMask:NSWindowStyleMaskTitled |
                             NSWindowStyleMaskClosable
                     backing:NSBackingStoreBuffered
@@ -1581,12 +1886,12 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
 
     NSView *content = light_settings_window.contentView;
     InsetGroupView *status_group = [[InsetGroupView alloc]
-        initWithFrame:NSMakeRect(10, 127, 308, 111)];
+        initWithFrame:NSMakeRect(10, 213, 308, 111)];
     [content addSubview:status_group];
 
     NSTextField *status_title =
         [NSTextField labelWithString:L("status.section", "Status")];
-    status_title.frame = NSMakeRect(14, 246, 150, 16);
+    status_title.frame = NSMakeRect(14, 332, 150, 16);
     status_title.font =
         [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];
     [content addSubview:status_title];
@@ -1609,7 +1914,7 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
         NSInteger row = index / 3;
         CGFloat x = row == 0 ? 18 + column * 102
                              : 69 + column * 102;
-        CGFloat y = 201 - row * 51;
+        CGFloat y = 287 - row * 51;
 
         StatusPreviewView *card = [[StatusPreviewView alloc]
             initWithFrame:NSMakeRect(x, y, 88, 25)
@@ -1627,19 +1932,54 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     }
     status_cards = [cards copy];
 
+    NSTextField *scope_label =
+        [NSTextField labelWithString:L("scope.title", "Lighting Scope")];
+    scope_label.frame = NSMakeRect(14, 194, 140, 16);
+    scope_label.font =
+        [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];
+    [content addSubview:scope_label];
+
+    InsetGroupView *scope_group = [[InsetGroupView alloc]
+        initWithFrame:NSMakeRect(10, 159, 308, 32)];
+    [content addSubview:scope_group];
+
+    scope_control = [[NSSegmentedControl alloc]
+        initWithFrame:NSMakeRect(14, 163, 300, 24)];
+    scope_control.segmentCount = LIGHTING_SCOPE_COUNT;
+    [scope_control setLabel:L("scope.whole_board.short", "Whole Keyboard")
+                 forSegment:LIGHTING_SCOPE_WHOLE_BOARD];
+    [scope_control setLabel:L("scope.number_keys.short", "Keys 1–9")
+                 forSegment:LIGHTING_SCOPE_NUMBER_KEYS];
+    scope_control.segmentStyle = NSSegmentStyleRounded;
+    scope_control.controlSize = NSControlSizeSmall;
+    scope_control.font =
+        [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+    scope_control.target = self;
+    scope_control.action = @selector(chooseScopeFromSettings:);
+    [content addSubview:scope_control];
+
+    NSTextField *scope_tip = [NSTextField
+        labelWithString:L("scope.rgb9_note", "Tip: Number Keys 1–9 requires Threadlight RGB9 v0.2+ firmware on a tri-mode Alice80.")];
+    scope_tip.frame = NSMakeRect(14, 122, 300, 30);
+    scope_tip.font = [NSFont systemFontOfSize:10.5];
+    scope_tip.textColor = NSColor.secondaryLabelColor;
+    scope_tip.lineBreakMode = NSLineBreakByWordWrapping;
+    scope_tip.maximumNumberOfLines = 2;
+    [content addSubview:scope_tip];
+
     NSTextField *scheme_label =
         [NSTextField labelWithString:L("scheme.title", "Color scheme")];
-    scheme_label.frame = NSMakeRect(14, 109, 140, 16);
+    scheme_label.frame = NSMakeRect(14, 108, 140, 16);
     scheme_label.font =
         [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];
     [content addSubview:scheme_label];
 
     InsetGroupView *scheme_group = [[InsetGroupView alloc]
-        initWithFrame:NSMakeRect(10, 74, 308, 32)];
+        initWithFrame:NSMakeRect(10, 73, 308, 32)];
     [content addSubview:scheme_group];
 
     scheme_control = [[NSSegmentedControl alloc]
-        initWithFrame:NSMakeRect(14, 78, 300, 24)];
+        initWithFrame:NSMakeRect(14, 77, 300, 24)];
     scheme_control.segmentCount = 3;
     [scheme_control setLabel:@"Codex" forSegment:0];
     [scheme_control setLabel:@"Ocean" forSegment:1];
@@ -1654,20 +1994,20 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
 
     NSTextField *brightness_label =
         [NSTextField labelWithString:L("brightness.title", "Brightness")];
-    brightness_label.frame = NSMakeRect(14, 45, 110, 16);
+    brightness_label.frame = NSMakeRect(14, 44, 110, 16);
     brightness_label.font =
         [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];
     [content addSubview:brightness_label];
 
     brightness_value_label = [NSTextField labelWithString:@"68%"];
-    brightness_value_label.frame = NSMakeRect(266, 45, 48, 16);
+    brightness_value_label.frame = NSMakeRect(266, 44, 48, 16);
     brightness_value_label.alignment = NSTextAlignmentRight;
     brightness_value_label.font = [NSFont systemFontOfSize:11];
     brightness_value_label.textColor = NSColor.secondaryLabelColor;
     [content addSubview:brightness_value_label];
 
     brightness_slider = [[NSSlider alloc]
-        initWithFrame:NSMakeRect(14, 14, 300, 18)];
+        initWithFrame:NSMakeRect(14, 13, 300, 18)];
     brightness_slider.minValue = 20;
     brightness_slider.maxValue = 100;
     brightness_slider.continuous = YES;
@@ -1730,8 +2070,10 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
 - (void)showLightSettings:(id)sender {
     (void)sender;
     [self buildLightSettingsWindow];
+    (void)load_lighting_scope();
     (void)load_color_scheme();
     (void)load_brightness();
+    scope_control.selectedSegment = lighting_scope;
     scheme_control.selectedSegment = color_scheme;
     brightness_slider.integerValue = light_brightness_percent;
     brightness_value_label.stringValue =
@@ -1741,6 +2083,19 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     [NSApp activateIgnoringOtherApps:YES];
     [light_settings_window makeKeyAndOrderFront:nil];
     [self animateSettingsPreview:nil];
+}
+
+- (void)chooseScopeFromSettings:(NSSegmentedControl *)sender {
+    lighting_scope_t selected =
+        (lighting_scope_t)sender.selectedSegment;
+    if (selected < 0 || selected >= LIGHTING_SCOPE_COUNT) {
+        return;
+    }
+    if (!save_lighting_scope(selected)) {
+        log_line("ERROR", "Unable to save the lighting scope.");
+        return;
+    }
+    [self updateAppearance];
 }
 
 - (void)chooseSchemeFromSettings:(NSSegmentedControl *)sender {
@@ -1775,6 +2130,7 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
 
 - (void)runMenuActionSelfTest {
     bool original_enabled = task_lights_enabled;
+    lighting_scope_t original_scope = lighting_scope;
     color_scheme_t original_scheme = color_scheme;
     uint8_t original_brightness = light_brightness_percent;
     log_line("UI-TEST", "Starting menu action regression test.");
@@ -1786,6 +2142,13 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     if (task_lights_enabled != original_enabled) {
         (void)save_task_lights_enabled(original_enabled);
     }
+
+    [self buildLightSettingsWindow];
+    for (NSInteger index = 0; index < LIGHTING_SCOPE_COUNT; index++) {
+        scope_control.selectedSegment = index;
+        [self chooseScopeFromSettings:scope_control];
+    }
+    (void)save_lighting_scope(original_scope);
 
     for (NSInteger index = 0; index < COLOR_SCHEME_COUNT; index++) {
         [NSApp sendAction:scheme_items[index].action
@@ -1833,6 +2196,9 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
             (NSInteger)color_scheme == index ? NSControlStateValueOn
                                              : NSControlStateValueOff;
     }
+    if (scope_control != nil) {
+        scope_control.selectedSegment = lighting_scope;
+    }
     if (scheme_control != nil) {
         scheme_control.selectedSegment = color_scheme;
     }
@@ -1868,6 +2234,7 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     (void)menu;
     log_line("UI", "Status menu opened.");
     (void)load_task_lights_enabled();
+    (void)load_lighting_scope();
     (void)load_color_scheme();
     (void)load_brightness();
     [self updateAppearance];
@@ -1889,7 +2256,7 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     if (selected < 0 || selected >= COLOR_SCHEME_COUNT) {
         return;
     }
-    log_line("UI", "Menu action: change whole-board color scheme.");
+    log_line("UI", "Menu action: change the task-light color scheme.");
     if (!save_color_scheme(selected)) {
         log_line("ERROR", "Unable to save the color scheme.");
     }
@@ -2057,13 +2424,14 @@ static void print_usage(const char *program) {
             "  %s --agent\n"
             "  %s --daemon\n"
             "  %s --task-lights on|off\n"
+            "  %s --scope whole-board|number-keys\n"
             "  %s --scheme codex|ocean|violet\n"
             "  %s --brightness 20..100\n"
             "  %s --request-test [working|complete|idle|waiting|error|off]\n"
             "  %s --test [working|complete|idle|waiting|error|off]\n"
             "  %s --off\n",
             program, program, program, program, program, program, program,
-            program);
+            program, program);
 }
 
 static bool parse_status(const char *name, slot_status_t *status) {
@@ -2123,6 +2491,16 @@ int main(int argc, char **argv) {
             print_usage(argv[0]);
             result = 2;
         }
+    } else if (argc == 3 &&
+               (strcmp(argv[1], "--scope") == 0 ||
+                strcmp(argv[1], "--mode") == 0)) {
+        lighting_scope_t scope;
+        if (!parse_lighting_scope(argv[2], &scope)) {
+            print_usage(argv[0]);
+            result = 2;
+        } else {
+            result = save_lighting_scope(scope) ? 0 : 1;
+        }
     } else if (argc == 3 && strcmp(argv[1], "--scheme") == 0) {
         color_scheme_t scheme;
         if (!parse_color_scheme(argv[2], &scheme)) {
@@ -2159,7 +2537,7 @@ int main(int argc, char **argv) {
         }
         result = test_status_color(status);
     } else if (argc == 2 && strcmp(argv[1], "--off") == 0) {
-        result = apply_status_color(SLOT_OFF) ? 0 : 1;
+        result = test_status_color(SLOT_OFF);
     } else {
         print_usage(argv[0]);
         result = 2;
