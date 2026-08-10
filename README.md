@@ -46,7 +46,7 @@ Threadlight 是一个轻量的 macOS 菜单栏应用。它只读观察本机 Cod
 | 范围 | 行为 | 固件要求 |
 | --- | --- | --- |
 | 整个键盘 | 汇总所有任务，显示最高优先级状态 | 原厂 QMK/VIA 固件 |
-| 数字键 `1`–`9` | 对应 Codex 侧栏最近的前 9 个任务，每个键独立显示一个任务状态；其他位置全部熄灭 | [Threadlight RGB9 v0.2.0+ 固件](firmware/README.md) |
+| 数字键 `1`–`9` | 对应最近 9 个本地 Codex 主任务，并按侧栏置顶顺序优先排列；顺序变化时自动重排，后台 subagent 和旧的置顶记录不占编号，其他位置全部熄灭 | [Threadlight RGB9 v0.2.0+ 固件](firmware/README.md) |
 
 “灯光范围”决定状态显示在哪里；“配色方案”和“亮度”决定它如何显示。这三个设置彼此独立。数字键模式由固件在每一帧清空背景，让注意力只留在 `1`–`9`；退出该模式时自动恢复原灯效。
 
@@ -161,7 +161,7 @@ cd threadlight
 
 ## 工作原理与隐私
 
-1. 只读打开 `~/.codex/state_5.sqlite`，发现未归档任务。
+1. 只读打开 `~/.codex/state_5.sqlite` 发现最近的未归档任务，并读取 `~/.codex/.codex-global-state.json` 中的侧栏置顶顺序。
 2. 只读监视对应 rollout JSONL，识别执行、完成、等待和错误事件。
 3. 整板模式通过 QMK/VIA 32 字节 Raw HID 设置 HSV；数字键模式通过 Threadlight RGB9 的 `0xB0` 覆盖协议，让固件在同一帧清空整板背景并写入 9 颗 LED。
 4. 菜单进程管理一个灯控子进程；没有快捷键观察器。
@@ -232,7 +232,7 @@ Threadlight is a lightweight macOS menu bar app. It watches local Codex task eve
 | Scope | Behavior | Firmware requirement |
 | --- | --- | --- |
 | Whole Keyboard | Aggregates every task and shows the highest-priority status | Stock QMK/VIA firmware |
-| Number Keys `1`–`9` | Matches the first nine recent tasks in the Codex sidebar; each key shows one task and every other position stays dark | [Threadlight RGB9 v0.2.0+ firmware](firmware/README.md) |
+| Number Keys `1`–`9` | Uses the nine most recent local primary Codex tasks and prioritizes the sidebar's manual pin order; slots update when the order changes, background subagents and stale pin records do not consume slots, and every other position stays dark | [Threadlight RGB9 v0.2.0+ firmware](firmware/README.md) |
 
 Lighting scope decides where status appears. Color scheme and brightness decide how it appears; all three settings are independent. In Number Keys scope the firmware clears the background on every frame so attention stays on `1`–`9`; leaving the scope restores the original effect automatically.
 
@@ -341,7 +341,7 @@ The menu also provides pause, logs, launch at login, the GitHub project, and Qui
 
 ## How it works and privacy
 
-1. Opens `~/.codex/state_5.sqlite` read-only to discover unarchived tasks.
+1. Opens `~/.codex/state_5.sqlite` read-only to discover recent unarchived tasks, and reads the sidebar pin order from `~/.codex/.codex-global-state.json`.
 2. Watches the corresponding rollout JSONL files read-only for working, complete, waiting, and error events.
 3. Whole Keyboard scope sends HSV through 32-byte QMK/VIA Raw HID reports; Number Keys scope uses Threadlight RGB9 command `0xB0` so the firmware clears the board background and writes nine volatile LED colors in the same frame.
 4. Runs one menu process and one lighting child process; there is no shortcut observer.

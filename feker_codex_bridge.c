@@ -25,6 +25,7 @@
 
 #ifdef __OBJC__
 #import <AppKit/AppKit.h>
+#import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
 #import <ServiceManagement/ServiceManagement.h>
 #endif
@@ -50,6 +51,7 @@
 #define COMPLETE_RECOVERY_WINDOW_SECONDS 300
 #define MAX_THREADS 128
 #define MAX_TITLE 256
+#define SIDEBAR_CATALOG_LIMIT RGB9_INDICATOR_COUNT
 
 typedef struct {
     uint8_t r;
@@ -91,6 +93,12 @@ typedef struct {
     bool active;
 } watched_thread_t;
 
+typedef struct {
+    char thread_id[64];
+    char rollout_path[PATH_MAX];
+    char title[MAX_TITLE];
+} discovered_thread_t;
+
 static volatile sig_atomic_t should_stop = 0;
 static watched_thread_t watched[MAX_THREADS];
 static size_t watched_count = 0;
@@ -118,6 +126,7 @@ static char lighting_scope_path[PATH_MAX];
 static char color_scheme_path[PATH_MAX];
 static char brightness_path[PATH_MAX];
 static char database_path[PATH_MAX];
+static char global_state_path[PATH_MAX];
 static char log_path[PATH_MAX];
 static char executable_path[PATH_MAX];
 static slot_status_t test_status = SLOT_OFF;
@@ -194,6 +203,8 @@ static bool initialize_paths(void) {
     snprintf(brightness_path, sizeof(brightness_path),
              "%s/brightness.txt", app_support_dir);
     snprintf(database_path, sizeof(database_path), "%s/.codex/state_5.sqlite", home);
+    snprintf(global_state_path, sizeof(global_state_path),
+             "%s/.codex/.codex-global-state.json", home);
     snprintf(log_path, sizeof(log_path), "%s/Threadlight.log", logs_dir);
 
     return ensure_directory(library_dir) &&
@@ -885,6 +896,62 @@ static void sanitize_title(char *title) {
     }
 }
 
+static bool load_pinned_thread_ids(
+    char pinned_thread_ids[MAX_THREADS][64], size_t *pinned_count) {
+    *pinned_count = 0;
+#ifdef __OBJC__
+    if (global_state_path[0] == '\0') {
+        return false;
+    }
+    @autoreleasepool {
+        NSString *path = [NSString stringWithUTF8String:global_state_path];
+        NSData *data = [NSData dataWithContentsOfFile:path];
+        if (data == nil) {
+            return false;
+        }
+        id root = [NSJSONSerialization JSONObjectWithData:data
+                                                  options:0
+                                                    error:nil];
+        if (![root isKindOfClass:[NSDictionary class]]) {
+            return false;
+        }
+        id values = [(NSDictionary *)root objectForKey:@"pinned-thread-ids"];
+        if (![values isKindOfClass:[NSArray class]]) {
+            return false;
+        }
+        for (id value in (NSArray *)values) {
+            if (*pinned_count >= MAX_THREADS ||
+                ![value isKindOfClass:[NSString class]]) {
+                continue;
+            }
+            const char *thread_id = [(NSString *)value UTF8String];
+            if (thread_id == NULL || thread_id[0] == '\0' ||
+                strlen(thread_id) >= sizeof(pinned_thread_ids[0])) {
+                continue;
+            }
+            bool duplicate = false;
+            for (size_t index = 0; index < *pinned_count; index++) {
+                if (strcmp(pinned_thread_ids[index], thread_id) == 0) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (duplicate) {
+                continue;
+            }
+            snprintf(pinned_thread_ids[*pinned_count],
+                     sizeof(pinned_thread_ids[*pinned_count]), "%s",
+                     thread_id);
+            (*pinned_count)++;
+        }
+        return true;
+    }
+#else
+    (void)pinned_thread_ids;
+    return false;
+#endif
+}
+
 static void initialize_rollout_position(watched_thread_t *item) {
     struct stat file_info;
     bool recently_updated = stat(item->rollout_path, &file_info) == 0 &&
@@ -974,10 +1041,60 @@ static void discover_threads(sqlite3 *database) {
     static const char *query =
         "SELECT id, rollout_path, title FROM threads "
         "WHERE archived = 0 AND rollout_path <> '' AND preview <> '' "
-        "ORDER BY recency_at_ms DESC, id DESC LIMIT 128";
+        "AND COALESCE(thread_source, '') <> 'subagent' "
+        "ORDER BY recency_at_ms DESC, id DESC LIMIT ?";
     sqlite3_stmt *statement = NULL;
     if (sqlite3_prepare_v2(database, query, -1, &statement, NULL) != SQLITE_OK) {
         return;
+    }
+    sqlite3_bind_int(statement, 1, SIDEBAR_CATALOG_LIMIT);
+
+    discovered_thread_t discovered[SIDEBAR_CATALOG_LIMIT];
+    size_t discovered_count = 0;
+    while (sqlite3_step(statement) == SQLITE_ROW &&
+           discovered_count < SIDEBAR_CATALOG_LIMIT) {
+        const char *thread_id = (const char *)sqlite3_column_text(statement, 0);
+        const char *path = (const char *)sqlite3_column_text(statement, 1);
+        const char *title = (const char *)sqlite3_column_text(statement, 2);
+        if (thread_id == NULL || path == NULL) {
+            continue;
+        }
+        discovered_thread_t *entry = &discovered[discovered_count++];
+        snprintf(entry->thread_id, sizeof(entry->thread_id), "%s", thread_id);
+        snprintf(entry->rollout_path, sizeof(entry->rollout_path), "%s", path);
+        snprintf(entry->title, sizeof(entry->title), "%s",
+                 title != NULL ? title : "");
+        sanitize_title(entry->title);
+    }
+    sqlite3_finalize(statement);
+
+    char pinned_thread_ids[MAX_THREADS][64];
+    size_t pinned_count = 0;
+    bool pinned_order_available =
+        load_pinned_thread_ids(pinned_thread_ids, &pinned_count);
+    bool ordered[SIDEBAR_CATALOG_LIMIT] = {false};
+    size_t display_order[SIDEBAR_CATALOG_LIMIT];
+    size_t display_count = 0;
+    if (pinned_order_available) {
+        for (size_t pinned_index = 0; pinned_index < pinned_count;
+             pinned_index++) {
+            for (size_t candidate_index = 0;
+                 candidate_index < discovered_count; candidate_index++) {
+                if (!ordered[candidate_index] &&
+                    strcmp(discovered[candidate_index].thread_id,
+                           pinned_thread_ids[pinned_index]) == 0) {
+                    display_order[display_count++] = candidate_index;
+                    ordered[candidate_index] = true;
+                    break;
+                }
+            }
+        }
+    }
+    for (size_t candidate_index = 0; candidate_index < discovered_count;
+         candidate_index++) {
+        if (!ordered[candidate_index]) {
+            display_order[display_count++] = candidate_index;
+        }
     }
 
     size_t previous_count = watched_count;
@@ -990,15 +1107,9 @@ static void discover_threads(sqlite3 *database) {
         watched[index].slot = 0;
     }
 
-    int visible_position = 0;
-    while (sqlite3_step(statement) == SQLITE_ROW) {
-        const char *thread_id = (const char *)sqlite3_column_text(statement, 0);
-        const char *path = (const char *)sqlite3_column_text(statement, 1);
-        const char *title = (const char *)sqlite3_column_text(statement, 2);
-        if (thread_id == NULL || path == NULL) {
-            continue;
-        }
-        watched_thread_t *item = find_thread(thread_id);
+    for (size_t position = 0; position < display_count; position++) {
+        discovered_thread_t *entry = &discovered[display_order[position]];
+        watched_thread_t *item = find_thread(entry->thread_id);
         if (item == NULL) {
             if (watched_count >= MAX_THREADS) {
                 continue;
@@ -1006,19 +1117,20 @@ static void discover_threads(sqlite3 *database) {
             item = &watched[watched_count++];
             memset(item, 0, sizeof(*item));
             item->status = SLOT_IDLE;
-            snprintf(item->thread_id, sizeof(item->thread_id), "%s", thread_id);
-            snprintf(item->rollout_path, sizeof(item->rollout_path), "%s", path);
-            snprintf(item->title, sizeof(item->title), "%s", title != NULL ? title : "");
-            sanitize_title(item->title);
+            snprintf(item->thread_id, sizeof(item->thread_id), "%s",
+                     entry->thread_id);
+            snprintf(item->rollout_path, sizeof(item->rollout_path), "%s",
+                     entry->rollout_path);
+            snprintf(item->title, sizeof(item->title), "%s", entry->title);
             initialize_rollout_position(item);
+        } else {
+            snprintf(item->title, sizeof(item->title), "%s", entry->title);
         }
         item->active = true;
-        visible_position++;
-        if (visible_position <= RGB9_INDICATOR_COUNT) {
-            item->slot = visible_position;
+        if (position < RGB9_INDICATOR_COUNT) {
+            item->slot = (int)position + 1;
         }
     }
-    sqlite3_finalize(statement);
 
     bool active_changed = watched_count != previous_count;
     for (size_t index = 0; !active_changed && index < watched_count; index++) {
