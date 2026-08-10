@@ -69,13 +69,13 @@ Threadlight 是一个轻量的 macOS 菜单栏应用。它只读观察本机 Cod
 
 ## 兼容性
 
-目前只支持下面这一款经过 USB 实测的键盘：
+目前只支持下列经 USB 实测的 Alice80 版本：
 
 | 项目 | 要求 |
 | --- | --- |
-| 型号 | 新版 FEKER Alice80，QMK/VIA 固件版本 |
+| 型号 | 经 USB 实测的 FEKER Alice80，QMK/VIA 固件版本 |
 | USB 产品名 | `Alice80` |
-| USB VID:PID | `36B0:305F` |
+| USB VID:PID | `36B0:305F`，或三模版 `36B0:3042` |
 | Raw HID | usage page `FF60`，usage `0061` |
 | macOS 实测厂商字符串 | `RDMCTMZT` |
 
@@ -177,8 +177,8 @@ tail -f ~/Library/Logs/Threadlight.log
 
 如果没有灯光变化：
 
-- 确认 USB 身份是 `36B0:305F`。
-- 确认实体开关为 `OFF`，并按过 `Fn + N`。
+- 确认 USB 身份是 `36B0:305F` 或 `36B0:3042`。
+- `36B0:305F` 版本确认实体开关为 `OFF`，并按过 `Fn + N`；三模 `36B0:3042` 版本将开关拨到中间的有线档。
 - 退出 VIA 或其他可能占用 Raw HID 的键盘软件。
 - 先从菜单执行一次“测试灯光”。
 - 确认 Codex 已经运行过至少一个本地任务。
@@ -234,13 +234,13 @@ The settings window previews every state animation at 60 FPS through Core Animat
 
 ## Compatibility
 
-Only this USB-tested keyboard is currently supported:
+Only these USB-tested Alice80 revisions are currently supported:
 
 | Property | Requirement |
 | --- | --- |
-| Model | New FEKER Alice80 revision with QMK/VIA firmware |
+| Model | USB-tested FEKER Alice80 revision with QMK/VIA firmware |
 | USB product | `Alice80` |
-| USB VID:PID | `36B0:305F` |
+| USB VID:PID | `36B0:305F`, or the tri-mode revision `36B0:3042` |
 | Raw HID | usage page `FF60`, usage `0061` |
 | Manufacturer observed on macOS | `RDMCTMZT` |
 
@@ -256,7 +256,7 @@ References: [FEKER Alice80 manual](https://fekertech.com/blogs/manual/feker-alic
 | 2.4GHz receiver | Supported | Unsupported and unverified |
 | Bluetooth | Supported | Unsupported |
 
-A connected USB-C cable may only charge the keyboard while it remains in a wireless mode. Move the Alice80 hardware switch to `OFF`, connect USB-C, and press `Fn + N` for wired mode.
+A connected USB-C cable may only charge the keyboard while it remains in a wireless mode. For `36B0:305F`, move the Alice80 hardware switch to `OFF`, connect USB-C, and press `Fn + N` for wired mode. For the tri-mode `36B0:3042` revision, move the hardware switch to its middle wired position.
 
 ## Codex setup
 
@@ -336,8 +336,8 @@ tail -f ~/Library/Logs/Threadlight.log
 
 If the lights do not change:
 
-- Confirm USB VID:PID `36B0:305F`.
-- Move the hardware switch to `OFF` and press `Fn + N`.
+- Confirm USB VID:PID `36B0:305F` or `36B0:3042`.
+- For `36B0:305F`, move the hardware switch to `OFF` and press `Fn + N`; for tri-mode `36B0:3042`, move the switch to its middle wired position.
 - Quit VIA or another keyboard utility that may hold Raw HID exclusively.
 - Run a light test from the menu.
 - Confirm Codex has completed at least one local task.

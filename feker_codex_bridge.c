@@ -30,7 +30,8 @@
 #endif
 
 #define FEKER_QMK_VID 0x36B0
-#define FEKER_QMK_PID 0x305F
+#define FEKER_ALICE80_QMK_PID 0x305F
+#define FEKER_ALICE80_TRIMODE_PID 0x3042
 #define FEKER_QMK_USAGE_PAGE 0xFF60
 #define FEKER_QMK_USAGE 0x0061
 #define QMK_REPORT_SIZE 32
@@ -225,14 +226,20 @@ static void configure_background_logging(void) {
     setvbuf(stderr, NULL, _IOLBF, 0);
 }
 
+static bool is_supported_feker_pid(unsigned short product_id) {
+    return product_id == FEKER_ALICE80_QMK_PID ||
+           product_id == FEKER_ALICE80_TRIMODE_PID;
+}
+
 static hid_device *open_rgb_device(void) {
     struct hid_device_info *devices =
-        hid_enumerate(FEKER_QMK_VID, FEKER_QMK_PID);
+        hid_enumerate(FEKER_QMK_VID, 0);
     const char *chosen_path = NULL;
     char path_copy[PATH_MAX];
 
     for (struct hid_device_info *item = devices; item != NULL; item = item->next) {
-        if (item->usage_page == FEKER_QMK_USAGE_PAGE &&
+        if (is_supported_feker_pid(item->product_id) &&
+            item->usage_page == FEKER_QMK_USAGE_PAGE &&
             item->usage == FEKER_QMK_USAGE && item->path != NULL) {
             snprintf(path_copy, sizeof(path_copy), "%s", item->path);
             chosen_path = path_copy;
@@ -245,7 +252,7 @@ static hid_device *open_rgb_device(void) {
         if (!hid_permission_warning_printed) {
             log_line("ERROR",
                      "FEKER QMK/VIA Raw HID interface was not found "
-                     "(expected 36B0:305F, usage FF60:0061).");
+                     "(expected Alice80 36B0:305F or 36B0:3042, usage FF60:0061).");
             hid_permission_warning_printed = true;
         }
         return NULL;
