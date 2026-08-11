@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Threadlight">
+  <rect x="32" y="32" width="448" height="448" rx="98" fill="#171B1F"/>
+  <path d="M198 206 L244 168 Q253 160 264 160 H292
+           Q306 160 306 174 V342 Q306 356 292 356 H260
+           Q246 356 246 342 V234 L226 250 Q216 258 207 248 L192 230
+           Q182 217 198 206 Z"
+        fill="#2F76F6"/>
+</svg>

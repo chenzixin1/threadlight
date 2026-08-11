@@ -1,4 +1,8 @@
-# Threadlight
+<p align="center">
+  <img src="assets/ThreadlightMark.svg" alt="Threadlight" width="88">
+</p>
+
+<h1 align="center">Threadlight</h1>
 
 <p align="center">
   <strong>让任务状态，亮在键盘上。</strong><br>

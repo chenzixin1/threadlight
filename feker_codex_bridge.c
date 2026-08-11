@@ -1044,6 +1044,11 @@ static void update_thread_status(watched_thread_t *item, slot_status_t status) {
     if (status == SLOT_WORKING) {
         item->unread = false;
         item->live_read_state_known = codex_ipc_fd >= 0;
+    } else if (status == SLOT_COMPLETE) {
+        // A completion belongs to the new turn. Read state from an older turn
+        // must not suppress the unread result that Codex is about to publish.
+        item->unread = false;
+        item->live_read_state_known = false;
     }
 
     char message[512];
@@ -2062,30 +2067,47 @@ static NSImage *threadlight_menu_icon(bool enabled) {
     [[NSColor blackColor] setStroke];
     [[NSColor blackColor] setFill];
     NSBezierPath *keycap = [NSBezierPath
-        bezierPathWithRoundedRect:NSMakeRect(1.5, 2.5, 15.0, 13.0)
-        xRadius:3.0 yRadius:3.0];
-    keycap.lineWidth = 1.5;
-    [keycap stroke];
+        bezierPathWithRoundedRect:NSMakeRect(2.0, 2.0, 14.0, 14.0)
+        xRadius:3.1 yRadius:3.1];
 
     if (enabled) {
-        NSBezierPath *thread = [NSBezierPath bezierPath];
-        thread.lineWidth = 1.45;
-        thread.lineCapStyle = NSLineCapStyleRound;
-        thread.lineJoinStyle = NSLineJoinStyleRound;
-        [thread moveToPoint:NSMakePoint(4.5, 6.0)];
-        [thread curveToPoint:NSMakePoint(13.5, 11.5)
-               controlPoint1:NSMakePoint(7.0, 6.0)
-               controlPoint2:NSMakePoint(9.0, 12.0)];
-        [thread stroke];
-        for (NSValue *point_value in @[
-                 [NSValue valueWithPoint:NSMakePoint(4.5, 6.0)],
-                 [NSValue valueWithPoint:NSMakePoint(9.0, 9.0)],
-                 [NSValue valueWithPoint:NSMakePoint(13.5, 11.5)]]) {
-            NSPoint point = point_value.pointValue;
-            [[NSBezierPath bezierPathWithOvalInRect:
-                NSMakeRect(point.x - 1.05, point.y - 1.05, 2.1, 2.1)] fill];
-        }
+        NSBezierPath *one = [NSBezierPath bezierPath];
+        [one moveToPoint:NSMakePoint(6.1, 10.4)];
+        [one lineToPoint:NSMakePoint(8.0, 12.0)];
+        [one curveToPoint:NSMakePoint(8.8, 12.3)
+              controlPoint1:NSMakePoint(8.2, 12.2)
+              controlPoint2:NSMakePoint(8.5, 12.3)];
+        [one lineToPoint:NSMakePoint(10.2, 12.3)];
+        [one curveToPoint:NSMakePoint(10.7, 11.8)
+              controlPoint1:NSMakePoint(10.5, 12.3)
+              controlPoint2:NSMakePoint(10.7, 12.1)];
+        [one lineToPoint:NSMakePoint(10.7, 5.7)];
+        [one curveToPoint:NSMakePoint(10.2, 5.2)
+              controlPoint1:NSMakePoint(10.7, 5.4)
+              controlPoint2:NSMakePoint(10.5, 5.2)];
+        [one lineToPoint:NSMakePoint(8.7, 5.2)];
+        [one curveToPoint:NSMakePoint(8.2, 5.7)
+              controlPoint1:NSMakePoint(8.4, 5.2)
+              controlPoint2:NSMakePoint(8.2, 5.4)];
+        [one lineToPoint:NSMakePoint(8.2, 9.5)];
+        [one lineToPoint:NSMakePoint(7.3, 8.8)];
+        [one curveToPoint:NSMakePoint(6.7, 8.9)
+              controlPoint1:NSMakePoint(7.1, 8.6)
+              controlPoint2:NSMakePoint(6.8, 8.7)];
+        [one lineToPoint:NSMakePoint(6.0, 9.7)];
+        [one curveToPoint:NSMakePoint(6.1, 10.4)
+              controlPoint1:NSMakePoint(5.8, 10.0)
+              controlPoint2:NSMakePoint(5.9, 10.2)];
+        [one closePath];
+
+        [keycap appendBezierPath:one];
+        keycap.windingRule = NSWindingRuleEvenOdd;
+        [keycap fill];
     } else {
+        keycap.lineWidth = 1.45;
+        keycap.lineJoinStyle = NSLineJoinStyleRound;
+        [keycap stroke];
+
         NSBezierPath *pause = [NSBezierPath bezierPath];
         pause.lineWidth = 1.8;
         [pause moveToPoint:NSMakePoint(7.0, 6.0)];
