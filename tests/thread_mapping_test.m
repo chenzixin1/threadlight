@@ -415,6 +415,16 @@ int main(void) {
     update_thread_status(main_task, SLOT_WORKING);
     expect(main_task->live_read_state_known && !main_task->unread,
            "a new working turn with IPC connected must discard old unread state");
+
+    update_thread_status(main_task, SLOT_COMPLETE);
+    expect(!main_task->live_read_state_known && !main_task->unread,
+           "a new completion must invalidate the previous turn's read state");
+    write_global_state(pinned_state_path, "first-visible",
+                       "legacy-null-source", "running-main", "running-main");
+    discover_threads(database);
+    collect_number_key_statuses(statuses);
+    expect(main_task->unread && statuses[2] == SLOT_COMPLETE,
+           "an unread completion must turn blue after an older read event");
     codex_ipc_fd = -1;
 
     sqlite3_close(database);
@@ -432,7 +442,7 @@ int main(void) {
     rmdir(fixture_directory);
 
     puts("thread mapping regression passed: ordering and subagent filtering "
-         "preserved; live read-state IPC, restart persistence, status colors, "
-         "and full-frame black clearing verified");
+         "preserved; live read-state IPC, per-turn completion state, restart "
+         "persistence, status colors, and full-frame black clearing verified");
     return 0;
 }
