@@ -73,16 +73,23 @@ static void fixture_path(char output[PATH_MAX], const char *directory,
     }
 }
 
-static void write_pinned_order(const char *path, const char *first,
-                               const char *second, const char *third) {
+static void write_global_state(const char *path, const char *first,
+                               const char *second, const char *third,
+                               const char *unread_thread_id) {
     FILE *file = fopen(path, "w");
     if (file == NULL) {
         fail("unable to create global-state fixture");
     }
     fprintf(file,
             "{\"pinned-thread-ids\":[\"stale-pinned\","
-            "\"%s\",\"%s\",\"%s\"]}\n",
+            "\"%s\",\"%s\",\"%s\"],"
+            "\"electron-persisted-atom-state\":{"
+            "\"unread-thread-ids-by-host-v1\":{\"local\":[",
             first, second, third);
+    if (unread_thread_id != NULL) {
+        fprintf(file, "\"%s\"", unread_thread_id);
+    }
+    fputs("]}}}\n", file);
     if (fclose(file) != 0) {
         fail("unable to close global-state fixture");
     }
@@ -127,8 +134,8 @@ int main(void) {
         fixture_path(filler_paths[index], fixture_directory, name);
         write_event(filler_paths[index], "task_started", false);
     }
-    write_pinned_order(pinned_state_path, "first-visible",
-                       "legacy-null-source", "running-main");
+    write_global_state(pinned_state_path, "first-visible",
+                       "legacy-null-source", "running-main", "running-main");
 
     sqlite3 *database = NULL;
     if (sqlite3_open(":memory:", &database) != SQLITE_OK) {
@@ -161,7 +168,6 @@ int main(void) {
 
     memset(watched, 0, sizeof(watched));
     watched_count = 0;
-    completion_latched = false;
     task_lights_enabled = false;
     lighting_scope = LIGHTING_SCOPE_NUMBER_KEYS;
     snprintf(global_state_path, sizeof(global_state_path), "%s",
@@ -191,13 +197,13 @@ int main(void) {
     slot_status_t statuses[RGB9_INDICATOR_COUNT];
     collect_number_key_statuses(statuses);
     expect(statuses[2] == SLOT_WORKING,
-           "key 3 must stay working while its subagent is complete");
+           "key 3 must stay working despite stale unread state and a completed subagent");
     rgb_t working = base_color_for_status(COLOR_SCHEME_CODEX, statuses[2]);
-    expect(working.r == 0x30 && working.g == 0x4F && working.b == 0xFE,
-           "working main task must map to the Codex blue color");
+    expect(working.r == 0x00 && working.g == 0xFF && working.b == 0x4C,
+           "working main task must map to the Codex green color");
 
-    write_pinned_order(pinned_state_path, "running-main", "first-visible",
-                       "legacy-null-source");
+    write_global_state(pinned_state_path, "running-main", "first-visible",
+                       "legacy-null-source", NULL);
     discover_threads(database);
     expect(main_task->slot == 1 && first->slot == 2 && legacy_null->slot == 3,
            "number-key slots must follow sidebar order changes");
@@ -211,8 +217,8 @@ int main(void) {
     expect(first->slot == 1 && main_task->slot == 2,
            "missing global state must fall back to recency order");
 
-    write_pinned_order(pinned_state_path, "first-visible",
-                       "legacy-null-source", "running-main");
+    write_global_state(pinned_state_path, "first-visible",
+                       "legacy-null-source", "running-main", NULL);
     snprintf(global_state_path, sizeof(global_state_path), "%s",
              pinned_state_path);
     discover_threads(database);
@@ -222,11 +228,35 @@ int main(void) {
     write_event(main_path, "task_complete", true);
     process_appended_events(main_task);
     collect_number_key_statuses(statuses);
+    expect(statuses[2] == SLOT_OFF,
+           "a viewed or not-yet-unread completion must stay dark");
+
+    write_global_state(pinned_state_path, "first-visible",
+                       "legacy-null-source", "running-main", "running-main");
+    discover_threads(database);
+    collect_number_key_statuses(statuses);
     expect(statuses[2] == SLOT_COMPLETE,
-           "key 3 must become complete after the main task completes");
+           "key 3 must show a completed task while its result is unread");
     rgb_t complete = base_color_for_status(COLOR_SCHEME_CODEX, statuses[2]);
-    expect(complete.r == 0x00 && complete.g == 0xFF && complete.b == 0x4C,
-           "completed main task must map to the Codex green color");
+    expect(complete.r == 0x30 && complete.g == 0x4F && complete.b == 0xFE,
+           "unread completed task must map to the Codex blue color");
+
+    write_global_state(pinned_state_path, "first-visible",
+                       "legacy-null-source", "running-main", NULL);
+    discover_threads(database);
+    collect_number_key_statuses(statuses);
+    expect(statuses[2] == SLOT_OFF,
+           "viewing the completed task must turn key 3 off");
+    rgb_t idle = base_color_for_status(COLOR_SCHEME_CODEX, SLOT_IDLE);
+    expect(idle.r == 0x00 && idle.g == 0x00 && idle.b == 0x00,
+           "idle must map to black instead of white");
+    slot_status_t parsed_status = SLOT_OFF;
+    expect(parse_status("green", &parsed_status) &&
+               parsed_status == SLOT_WORKING,
+           "the green CLI alias must select working");
+    expect(parse_status("blue", &parsed_status) &&
+               parsed_status == SLOT_COMPLETE,
+           "the blue CLI alias must select completed and unread");
 
     sqlite3_close(database);
     unlink(first_path);
@@ -241,7 +271,7 @@ int main(void) {
     unlink(pinned_state_path);
     rmdir(fixture_directory);
 
-    puts("thread mapping regression passed: sidebar pin order and dynamic "
-         "reordering preserved, subagents excluded, key 3 status verified");
+    puts("thread mapping regression passed: ordering and subagent filtering "
+         "preserved; green working, blue unread, and viewed-off verified");
     return 0;
 }

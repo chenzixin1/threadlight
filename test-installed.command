@@ -9,7 +9,7 @@ if [[ ! -x "$app_binary" ]]; then
 fi
 
 "$app_binary" --request-test complete
-echo "The selected lighting scope shows green for 30 seconds."
+echo "The selected lighting scope shows solid blue for 30 seconds."
 echo "Whole Keyboard lights the board; Number Keys lights 1–9."
 echo "No administrator password is needed."
 read "?Press Return to close…"

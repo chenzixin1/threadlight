@@ -54,26 +54,28 @@ Threadlight 是一个轻量的 macOS 菜单栏应用。它只读观察本机 Cod
 
 | Codex 状态 | Threadlight 灯效 |
 | --- | --- |
-| 执行中 | 蓝色平滑呼吸 |
-| 刚刚完成 | 绿色呼吸两次，然后常亮至下一项任务开始 |
+| 执行中 | 绿色平滑呼吸 |
+| 已完成、结果尚未查看 | 蓝色常亮，与 Codex App 侧栏蓝点同步 |
 | 等待输入或批准 | 橙色慢速呼吸 |
 | 任务失败 | 红色双闪后常亮；用户主动取消不算失败 |
-| 空闲 | 整板模式恢复原灯效；数字键模式显示白色 |
+| 已查看或空闲 | 整板模式恢复原灯效；数字键模式熄灭 |
 | 暂停或退出 | 恢复键盘原有灯效 |
+
+Codex App 中的任务蓝点消失后，对应数字键也会自动熄灭。蓝色表示“有尚未查看的完成结果”，而不是永久保存的历史完成状态。
 
 在“整个键盘”范围中，多个任务同时存在时显示优先级最高的状态：
 
 ```text
-任务失败 > 等待操作 > 已完成提示 > 执行中 > 空闲
+任务失败 > 等待操作 > 执行中 > 未读完成结果 > 空闲
 ```
 
 ## 三套配色
 
-| 方案 | 执行中 | 已完成 | 等待 | 失败 |
+| 方案 | 执行中 | 完成待查看 | 等待 | 失败 |
 | --- | --- | --- | --- | --- |
-| Codex | `#304FFE` | `#00FF4C` | `#FF6D00` | `#FF0033` |
-| Ocean | `#00B8FF` | `#00E5A8` | `#FFB000` | `#FF416C` |
-| Violet | `#8B5CF6` | `#2DD4BF` | `#F59E0B` | `#E11D48` |
+| Codex | `#00FF4C` | `#304FFE` | `#FF6D00` | `#FF0033` |
+| Ocean | `#00E5A8` | `#00B8FF` | `#FFB000` | `#FF416C` |
+| Violet | `#2DD4BF` | `#8B5CF6` | `#F59E0B` | `#E11D48` |
 
 设置窗口会实时预览各状态的动画。界面使用 Core Animation 以 60 FPS 绘制，键盘通过 Raw HID 以 30 FPS 更新。亮度可在 20%–100% 之间调节。
 
@@ -161,8 +163,8 @@ cd threadlight
 
 ## 工作原理与隐私
 
-1. 只读打开 `~/.codex/state_5.sqlite` 发现最近的未归档任务，并读取 `~/.codex/.codex-global-state.json` 中的侧栏置顶顺序。
-2. 只读监视对应 rollout JSONL，识别执行、完成、等待和错误事件。
+1. 只读打开 `~/.codex/state_5.sqlite` 发现最近的未归档任务，并读取 `~/.codex/.codex-global-state.json` 中的侧栏置顶顺序和未读任务列表。
+2. 只读监视对应 rollout JSONL，识别执行、完成、等待和错误事件；任务在 Codex App 中被查看后，未读列表变化会让对应数字键熄灭。
 3. 整板模式通过 QMK/VIA 32 字节 Raw HID 设置 HSV；数字键模式通过 Threadlight RGB9 的 `0xB0` 覆盖协议，让固件在同一帧清空整板背景并写入 9 颗 LED。
 4. 菜单进程管理一个灯控子进程；没有快捷键观察器。
 
@@ -240,26 +242,28 @@ Lighting scope decides where status appears. Color scheme and brightness decide 
 
 | Codex state | Threadlight behavior |
 | --- | --- |
-| Working | Smooth blue breathing |
-| Just completed | Two green breaths, then solid until the next task starts |
+| Working | Smooth green breathing |
+| Completed, result not yet viewed | Solid blue, synchronized with the Codex sidebar dot |
 | Waiting for input or approval | Slow amber breathing |
 | Failed | Two red flashes, then solid; user interruption is not a failure |
-| Idle | Restore the original effect in Whole Keyboard scope; show white in Number Keys scope |
+| Viewed or idle | Restore the original effect in Whole Keyboard scope; turn the key off in Number Keys scope |
 | Paused or quit | Restore the keyboard's previous RGB effect |
+
+When the task's blue dot disappears in the Codex app, its number key turns off automatically. Blue means “completed result not yet viewed,” not a permanent historical completion state.
 
 In Whole Keyboard scope, Threadlight shows the highest-priority state:
 
 ```text
-Failed > Waiting > Completion indication > Working > Idle
+Failed > Waiting > Working > Unread completion > Idle
 ```
 
 ## Color schemes
 
-| Scheme | Working | Complete | Waiting | Failed |
+| Scheme | Working | Completed and unread | Waiting | Failed |
 | --- | --- | --- | --- | --- |
-| Codex | `#304FFE` | `#00FF4C` | `#FF6D00` | `#FF0033` |
-| Ocean | `#00B8FF` | `#00E5A8` | `#FFB000` | `#FF416C` |
-| Violet | `#8B5CF6` | `#2DD4BF` | `#F59E0B` | `#E11D48` |
+| Codex | `#00FF4C` | `#304FFE` | `#FF6D00` | `#FF0033` |
+| Ocean | `#00E5A8` | `#00B8FF` | `#FFB000` | `#FF416C` |
+| Violet | `#2DD4BF` | `#8B5CF6` | `#F59E0B` | `#E11D48` |
 
 The settings window previews every state animation at 60 FPS through Core Animation. Raw HID updates the keyboard at 30 FPS. Brightness is adjustable from 20% to 100%.
 
@@ -341,8 +345,8 @@ The menu also provides pause, logs, launch at login, the GitHub project, and Qui
 
 ## How it works and privacy
 
-1. Opens `~/.codex/state_5.sqlite` read-only to discover recent unarchived tasks, and reads the sidebar pin order from `~/.codex/.codex-global-state.json`.
-2. Watches the corresponding rollout JSONL files read-only for working, complete, waiting, and error events.
+1. Opens `~/.codex/state_5.sqlite` read-only to discover recent unarchived tasks, and reads sidebar pin order plus unread task IDs from `~/.codex/.codex-global-state.json`.
+2. Watches the corresponding rollout JSONL files read-only for working, complete, waiting, and error events; when a task is viewed in the Codex app, the unread-list change turns its number key off.
 3. Whole Keyboard scope sends HSV through 32-byte QMK/VIA Raw HID reports; Number Keys scope uses Threadlight RGB9 command `0xB0` so the firmware clears the board background and writes nine volatile LED colors in the same frame.
 4. Runs one menu process and one lighting child process; there is no shortcut observer.
 

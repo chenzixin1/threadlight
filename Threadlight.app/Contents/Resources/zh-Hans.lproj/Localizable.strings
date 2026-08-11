@@ -12,11 +12,11 @@
 "light_settings" = "灯光设置…";
 
 "test.title" = "测试灯光";
-"test.working" = "执行中（呼吸）";
-"test.complete" = "任务完成（呼吸两次后常亮）";
+"test.working" = "执行中（绿色呼吸）";
+"test.complete" = "完成待查看（蓝色常亮）";
 "test.waiting" = "等待操作";
 "test.error" = "任务失败";
-"test.idle" = "空闲";
+"test.idle" = "空闲/已查看（熄灭）";
 "test.off" = "熄灭测试灯";
 
 "help.title" = "使用说明";
@@ -24,11 +24,11 @@
 "help.toggle" = "菜单第一项：开启或暂停任务灯";
 "help.scope_board" = "整个键盘 — 显示最高优先级任务";
 "help.scope_keys" = "数字键 1–9 — 每键一个任务，其他键熄灭";
-"help.working" = "执行中 — 工作色呼吸";
-"help.complete" = "任务完成 — 呼吸两次后常亮";
+"help.working" = "执行中 — 绿色呼吸";
+"help.complete" = "结果未读 — 蓝色常亮至查看";
 "help.waiting" = "等待操作 — 需要输入或批准";
 "help.error" = "任务失败 — 未能完成任务";
-"help.idle" = "空闲 — 当前没有进行中的任务";
+"help.idle" = "空闲或已查看 — 按键熄灭";
 
 "log.open" = "查看运行日志…";
 "settings.title" = "设置";
@@ -42,11 +42,13 @@
 "window.title" = "Threadlight";
 "status.section" = "状态";
 "status.working" = "执行中";
-"status.complete" = "已完成";
+"status.complete" = "完成待查看";
 "status.waiting" = "等待用户";
 "status.error" = "任务失败";
-"status.idle" = "空闲";
+"status.idle" = "空闲/已查看";
 "effect.breathing" = "呼吸";
+"effect.until_viewed" = "常亮至查看";
+"effect.lights_off" = "熄灭";
 "effect.two_breaths" = "呼吸两次 → 常亮";
 "effect.slow_pulse" = "慢闪";
 "effect.two_flashes" = "双闪 → 常亮";
