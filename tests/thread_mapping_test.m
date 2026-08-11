@@ -258,6 +258,31 @@ int main(void) {
                parsed_status == SLOT_COMPLETE,
            "the blue CLI alias must select completed and unread");
 
+    slot_status_t frame_statuses[RGB9_INDICATOR_COUNT];
+    rgb_t frame_colors[RGB9_INDICATOR_COUNT];
+    for (size_t index = 0; index < RGB9_INDICATOR_COUNT; index++) {
+        frame_statuses[index] = SLOT_OFF;
+        frame_colors[index] = (rgb_t){0xFF, 0xFF, 0xFF};
+    }
+    uint16_t frame_mask =
+        compose_number_key_frame(frame_statuses, 0.0, frame_colors);
+    expect(frame_mask == RGB9_ALL_KEYS_MASK,
+           "every reconciliation frame must address all nine keys");
+    for (size_t index = 0; index < RGB9_INDICATOR_COUNT; index++) {
+        expect(frame_colors[index].r == 0x00 &&
+                   frame_colors[index].g == 0x00 &&
+                   frame_colors[index].b == 0x00,
+               "off keys must be explicitly written as black");
+    }
+    frame_statuses[4] = SLOT_WORKING;
+    frame_mask = compose_number_key_frame(frame_statuses, 0.0, frame_colors);
+    expect(frame_mask == RGB9_ALL_KEYS_MASK &&
+               frame_colors[4].g > 0x00,
+           "an active key must coexist with explicit black idle keys");
+    expect(frame_colors[6].r == 0x00 && frame_colors[6].g == 0x00 &&
+               frame_colors[6].b == 0x00,
+           "a previously lit idle key must be cleared in the same frame");
+
     sqlite3_close(database);
     unlink(first_path);
     unlink(subagent_path);
@@ -272,6 +297,6 @@ int main(void) {
     rmdir(fixture_directory);
 
     puts("thread mapping regression passed: ordering and subagent filtering "
-         "preserved; green working, blue unread, and viewed-off verified");
+         "preserved; status colors and full-frame black clearing verified");
     return 0;
 }

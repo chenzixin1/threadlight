@@ -165,8 +165,10 @@ cd threadlight
 
 1. 只读打开 `~/.codex/state_5.sqlite` 发现最近的未归档任务，并读取 `~/.codex/.codex-global-state.json` 中的侧栏置顶顺序和未读任务列表。
 2. 只读监视对应 rollout JSONL，识别执行、完成、等待和错误事件；任务在 Codex App 中被查看后，未读列表变化会让对应数字键熄灭。
-3. 整板模式通过 QMK/VIA 32 字节 Raw HID 设置 HSV；数字键模式通过 Threadlight RGB9 的 `0xB0` 覆盖协议，让固件在同一帧清空整板背景并写入 9 颗 LED。
+3. 整板模式通过 QMK/VIA 32 字节 Raw HID 设置 HSV；数字键模式通过 Threadlight RGB9 的 `0xB0` 覆盖协议，每次都写入完整九键帧，空闲键明确写黑，并在同一帧清空整板背景。
 4. 菜单进程管理一个灯控子进程；没有快捷键观察器。
+
+除文件变化触发的即时更新外，Threadlight 还会每 5 秒重发一次完整目标状态。这样即使发生异步更新遗漏、USB 短暂断连、睡眠唤醒或旧灯光帧残留，键盘也会自动恢复到 Codex 当前状态。
 
 两种输出都只修改运行时灯光状态，不写键盘 EEPROM。数字键模式不会修改键位，也不监听数字键输入。
 
@@ -347,8 +349,10 @@ The menu also provides pause, logs, launch at login, the GitHub project, and Qui
 
 1. Opens `~/.codex/state_5.sqlite` read-only to discover recent unarchived tasks, and reads sidebar pin order plus unread task IDs from `~/.codex/.codex-global-state.json`.
 2. Watches the corresponding rollout JSONL files read-only for working, complete, waiting, and error events; when a task is viewed in the Codex app, the unread-list change turns its number key off.
-3. Whole Keyboard scope sends HSV through 32-byte QMK/VIA Raw HID reports; Number Keys scope uses Threadlight RGB9 command `0xB0` so the firmware clears the board background and writes nine volatile LED colors in the same frame.
+3. Whole Keyboard scope sends HSV through 32-byte QMK/VIA Raw HID reports; Number Keys scope uses Threadlight RGB9 command `0xB0` to write a complete nine-key frame every time, explicitly writing idle keys as black while the firmware clears the board background in the same frame.
 4. Runs one menu process and one lighting child process; there is no shortcut observer.
+
+In addition to immediate file-triggered updates, Threadlight resends the complete desired state every five seconds. This self-heals missed asynchronous updates, brief USB disconnects, sleep/wake transitions, and stale lighting frames.
 
 Neither output writes keyboard EEPROM. Number Keys scope does not remap keys or monitor number-key input.
 

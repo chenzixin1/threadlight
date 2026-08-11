@@ -38,10 +38,12 @@
 #define QMK_REPORT_SIZE 32
 #define RGB9_COMMAND 0xB0
 #define RGB9_INDICATOR_COUNT 9
+#define RGB9_ALL_KEYS_MASK 0x01FF
 #define RGB9_FLAG_FOCUS 0x01
 #define DAEMON_TICK_INTERVAL_US 33333
 #define EVENT_POLL_TICK_COUNT 3
 #define THREAD_DISCOVERY_TICK_COUNT 60
+#define LIGHT_RECONCILE_TICK_COUNT 150
 #define SETTINGS_PREVIEW_INTERVAL (1.0 / 60.0)
 #define WORKING_BREATH_SECONDS 3.6
 #define WAITING_BREATH_SECONDS 4.4
@@ -691,20 +693,27 @@ static bool apply_whole_board_status(slot_status_t status) {
     return ok;
 }
 
-static bool apply_number_key_statuses(
-    const slot_status_t statuses[RGB9_INDICATOR_COUNT]) {
-    uint16_t mask = 0;
-    rgb_t colors[RGB9_INDICATOR_COUNT];
-    memset(colors, 0, sizeof(colors));
-    double elapsed_seconds = monotonic_seconds() - animation_started_at;
+static uint16_t compose_number_key_frame(
+    const slot_status_t statuses[RGB9_INDICATOR_COUNT],
+    double elapsed_seconds,
+    rgb_t colors[RGB9_INDICATOR_COUNT]) {
+    memset(colors, 0, sizeof(rgb_t) * RGB9_INDICATOR_COUNT);
     for (int index = 0; index < RGB9_INDICATOR_COUNT; index++) {
         if (statuses[index] == SLOT_OFF) {
             continue;
         }
-        mask |= (uint16_t)(1U << index);
         colors[index] = animated_color_for_status(statuses[index],
                                                   elapsed_seconds);
     }
+    return RGB9_ALL_KEYS_MASK;
+}
+
+static bool apply_number_key_statuses(
+    const slot_status_t statuses[RGB9_INDICATOR_COUNT]) {
+    rgb_t colors[RGB9_INDICATOR_COUNT];
+    double elapsed_seconds = monotonic_seconds() - animation_started_at;
+    uint16_t mask =
+        compose_number_key_frame(statuses, elapsed_seconds, colors);
     if (!ensure_rgb_device()) {
         return false;
     }
@@ -1573,7 +1582,8 @@ static int run_daemon(void) {
             test_override_until = 0;
             refresh_lights();
         }
-        if (status_animation_needs_tick()) {
+        if (status_animation_needs_tick() ||
+            ticks % LIGHT_RECONCILE_TICK_COUNT == 0) {
             refresh_lights();
         }
         usleep(DAEMON_TICK_INTERVAL_US);
