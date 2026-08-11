@@ -13,8 +13,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -38,17 +40,18 @@
 #define QMK_REPORT_SIZE 32
 #define RGB9_COMMAND 0xB0
 #define RGB9_INDICATOR_COUNT 9
+#define RGB9_ALL_KEYS_MASK 0x01FF
 #define RGB9_FLAG_FOCUS 0x01
 #define DAEMON_TICK_INTERVAL_US 33333
 #define EVENT_POLL_TICK_COUNT 3
 #define THREAD_DISCOVERY_TICK_COUNT 60
+#define LIGHT_RECONCILE_TICK_COUNT 150
+#define IPC_RECONNECT_TICK_COUNT 150
+#define IPC_FRAME_BUFFER_SIZE (256 * 1024)
 #define SETTINGS_PREVIEW_INTERVAL (1.0 / 60.0)
 #define WORKING_BREATH_SECONDS 3.6
-#define COMPLETE_BREATH_CYCLE_SECONDS 1.4
-#define COMPLETE_BREATH_TOTAL_SECONDS 2.8
 #define WAITING_BREATH_SECONDS 4.4
 #define ERROR_ALERT_SECONDS 0.8
-#define COMPLETE_RECOVERY_WINDOW_SECONDS 300
 #define MAX_THREADS 128
 #define MAX_TITLE 256
 #define SIDEBAR_CATALOG_LIMIT RGB9_INDICATOR_COUNT
@@ -89,8 +92,11 @@ typedef struct {
     int slot;
     slot_status_t status;
     time_t touched_at;
+    int64_t status_changed_at_ms;
     bool initialized;
     bool active;
+    bool unread;
+    bool live_read_state_known;
 } watched_thread_t;
 
 typedef struct {
@@ -98,6 +104,12 @@ typedef struct {
     char rollout_path[PATH_MAX];
     char title[MAX_TITLE];
 } discovered_thread_t;
+
+typedef struct {
+    char thread_id[64];
+    int64_t changed_at_ms;
+    bool unread;
+} read_state_entry_t;
 
 static volatile sig_atomic_t should_stop = 0;
 static watched_thread_t watched[MAX_THREADS];
@@ -125,8 +137,10 @@ static char task_lights_enabled_path[PATH_MAX];
 static char lighting_scope_path[PATH_MAX];
 static char color_scheme_path[PATH_MAX];
 static char brightness_path[PATH_MAX];
+static char read_state_path[PATH_MAX];
 static char database_path[PATH_MAX];
 static char global_state_path[PATH_MAX];
+static char ipc_socket_path[PATH_MAX];
 static char log_path[PATH_MAX];
 static char executable_path[PATH_MAX];
 static slot_status_t test_status = SLOT_OFF;
@@ -138,7 +152,12 @@ static uint8_t light_brightness_percent = 68;
 static double animation_started_at = 0.0;
 static slot_status_t rendered_status = SLOT_OFF;
 static slot_status_t rendered_number_key_statuses[RGB9_INDICATOR_COUNT];
-static bool completion_latched = false;
+static read_state_entry_t read_states[MAX_THREADS];
+static size_t read_state_count = 0;
+static int codex_ipc_fd = -1;
+static uint8_t codex_ipc_buffer[IPC_FRAME_BUFFER_SIZE];
+static size_t codex_ipc_buffer_length = 0;
+static bool codex_ipc_connected_once = false;
 
 static void handle_signal(int signal_number) {
     (void)signal_number;
@@ -149,6 +168,12 @@ static double monotonic_seconds(void) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     return (double)now.tv_sec + (double)now.tv_nsec / 1000000000.0;
+}
+
+static int64_t realtime_milliseconds(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
 }
 
 static void log_line(const char *level, const char *message) {
@@ -202,9 +227,13 @@ static bool initialize_paths(void) {
              "%s/color-scheme.txt", app_support_dir);
     snprintf(brightness_path, sizeof(brightness_path),
              "%s/brightness.txt", app_support_dir);
+    snprintf(read_state_path, sizeof(read_state_path),
+             "%s/codex-read-state.json", app_support_dir);
     snprintf(database_path, sizeof(database_path), "%s/.codex/state_5.sqlite", home);
     snprintf(global_state_path, sizeof(global_state_path),
              "%s/.codex/.codex-global-state.json", home);
+    snprintf(ipc_socket_path, sizeof(ipc_socket_path),
+             "%s/.codex/ipc/ipc.sock", home);
     snprintf(log_path, sizeof(log_path), "%s/Threadlight.log", logs_dir);
 
     return ensure_directory(library_dir) &&
@@ -555,21 +584,26 @@ static int status_priority(slot_status_t status) {
     return priority[status];
 }
 
+static slot_status_t visible_status_for_thread(
+    const watched_thread_t *item) {
+    if (item->status == SLOT_WORKING || item->status == SLOT_WAITING ||
+        item->status == SLOT_ERROR) {
+        return item->status;
+    }
+    return item->status == SLOT_COMPLETE && item->unread
+               ? SLOT_COMPLETE
+               : SLOT_OFF;
+}
+
 static slot_status_t aggregate_watched_status(void) {
     slot_status_t aggregate = SLOT_OFF;
     for (size_t index = 0; index < watched_count; index++) {
-        slot_status_t status = watched[index].status == SLOT_COMPLETE
-                                   ? SLOT_IDLE
-                                   : watched[index].status;
+        slot_status_t status = visible_status_for_thread(&watched[index]);
         if (watched[index].active &&
             status_priority(status) >
                 status_priority(aggregate)) {
             aggregate = status;
         }
-    }
-    if (completion_latched && aggregate != SLOT_ERROR &&
-        aggregate != SLOT_WAITING) {
-        return SLOT_COMPLETE;
     }
     return aggregate;
 }
@@ -599,25 +633,25 @@ static rgb_t base_color_for_status(color_scheme_t scheme,
     static const rgb_t palettes[COLOR_SCHEME_COUNT][SLOT_ERROR + 1] = {
         [COLOR_SCHEME_CODEX] = {
             [SLOT_OFF] = {0x00, 0x00, 0x00},
-            [SLOT_WORKING] = {0x30, 0x4F, 0xFE},
-            [SLOT_COMPLETE] = {0x00, 0xFF, 0x4C},
-            [SLOT_IDLE] = {0xFF, 0xFF, 0xFF},
+            [SLOT_WORKING] = {0x00, 0xFF, 0x4C},
+            [SLOT_COMPLETE] = {0x30, 0x4F, 0xFE},
+            [SLOT_IDLE] = {0x00, 0x00, 0x00},
             [SLOT_WAITING] = {0xFF, 0x6D, 0x00},
             [SLOT_ERROR] = {0xFF, 0x00, 0x33},
         },
         [COLOR_SCHEME_OCEAN] = {
             [SLOT_OFF] = {0x00, 0x00, 0x00},
-            [SLOT_WORKING] = {0x00, 0xB8, 0xFF},
-            [SLOT_COMPLETE] = {0x00, 0xE5, 0xA8},
-            [SLOT_IDLE] = {0xBD, 0xEB, 0xFF},
+            [SLOT_WORKING] = {0x00, 0xE5, 0xA8},
+            [SLOT_COMPLETE] = {0x00, 0xB8, 0xFF},
+            [SLOT_IDLE] = {0x00, 0x00, 0x00},
             [SLOT_WAITING] = {0xFF, 0xB0, 0x00},
             [SLOT_ERROR] = {0xFF, 0x41, 0x6C},
         },
         [COLOR_SCHEME_VIOLET] = {
             [SLOT_OFF] = {0x00, 0x00, 0x00},
-            [SLOT_WORKING] = {0x8B, 0x5C, 0xF6},
-            [SLOT_COMPLETE] = {0x2D, 0xD4, 0xBF},
-            [SLOT_IDLE] = {0xF3, 0xE8, 0xFF},
+            [SLOT_WORKING] = {0x2D, 0xD4, 0xBF},
+            [SLOT_COMPLETE] = {0x8B, 0x5C, 0xF6},
+            [SLOT_IDLE] = {0x00, 0x00, 0x00},
             [SLOT_WAITING] = {0xF5, 0x9E, 0x0B},
             [SLOT_ERROR] = {0xE1, 0x1D, 0x48},
         },
@@ -631,10 +665,6 @@ static uint8_t animation_scale_for_status(slot_status_t status,
     if (status == SLOT_WORKING) {
         scale = smooth_breath_scale(elapsed_seconds,
                                     WORKING_BREATH_SECONDS, 112, 255);
-    } else if (status == SLOT_COMPLETE &&
-               elapsed_seconds < COMPLETE_BREATH_TOTAL_SECONDS) {
-        scale = smooth_breath_scale(elapsed_seconds,
-                                    COMPLETE_BREATH_CYCLE_SECONDS, 118, 255);
     } else if (status == SLOT_WAITING) {
         scale = smooth_breath_scale(elapsed_seconds,
                                     WAITING_BREATH_SECONDS, 96, 255);
@@ -668,7 +698,8 @@ static void collect_number_key_statuses(
     for (size_t index = 0; index < watched_count; index++) {
         if (watched[index].active && watched[index].slot >= 1 &&
             watched[index].slot <= RGB9_INDICATOR_COUNT) {
-            statuses[watched[index].slot - 1] = watched[index].status;
+            statuses[watched[index].slot - 1] =
+                visible_status_for_thread(&watched[index]);
         }
     }
 }
@@ -694,20 +725,27 @@ static bool apply_whole_board_status(slot_status_t status) {
     return ok;
 }
 
-static bool apply_number_key_statuses(
-    const slot_status_t statuses[RGB9_INDICATOR_COUNT]) {
-    uint16_t mask = 0;
-    rgb_t colors[RGB9_INDICATOR_COUNT];
-    memset(colors, 0, sizeof(colors));
-    double elapsed_seconds = monotonic_seconds() - animation_started_at;
+static uint16_t compose_number_key_frame(
+    const slot_status_t statuses[RGB9_INDICATOR_COUNT],
+    double elapsed_seconds,
+    rgb_t colors[RGB9_INDICATOR_COUNT]) {
+    memset(colors, 0, sizeof(rgb_t) * RGB9_INDICATOR_COUNT);
     for (int index = 0; index < RGB9_INDICATOR_COUNT; index++) {
         if (statuses[index] == SLOT_OFF) {
             continue;
         }
-        mask |= (uint16_t)(1U << index);
         colors[index] = animated_color_for_status(statuses[index],
                                                   elapsed_seconds);
     }
+    return RGB9_ALL_KEYS_MASK;
+}
+
+static bool apply_number_key_statuses(
+    const slot_status_t statuses[RGB9_INDICATOR_COUNT]) {
+    rgb_t colors[RGB9_INDICATOR_COUNT];
+    double elapsed_seconds = monotonic_seconds() - animation_started_at;
+    uint16_t mask =
+        compose_number_key_frame(statuses, elapsed_seconds, colors);
     if (!ensure_rgb_device()) {
         return false;
     }
@@ -786,8 +824,6 @@ static bool status_animation_needs_tick(void) {
                                    ? test_status
                                    : aggregate_watched_status();
         return status == SLOT_WORKING || status == SLOT_WAITING ||
-               (status == SLOT_COMPLETE &&
-                elapsed_seconds < COMPLETE_BREATH_TOTAL_SECONDS) ||
                (status == SLOT_ERROR && elapsed_seconds < ERROR_ALERT_SECONDS);
     }
     slot_status_t statuses[RGB9_INDICATOR_COUNT];
@@ -801,8 +837,6 @@ static bool status_animation_needs_tick(void) {
     for (int index = 0; index < RGB9_INDICATOR_COUNT; index++) {
         slot_status_t status = statuses[index];
         if (status == SLOT_WORKING || status == SLOT_WAITING ||
-            (status == SLOT_COMPLETE &&
-             elapsed_seconds < COMPLETE_BREATH_TOTAL_SECONDS) ||
             (status == SLOT_ERROR && elapsed_seconds < ERROR_ALERT_SECONDS)) {
             return true;
         }
@@ -835,14 +869,182 @@ static watched_thread_t *find_thread(const char *thread_id) {
     return NULL;
 }
 
-static void update_thread_status(watched_thread_t *item, slot_status_t status) {
-    if (status == SLOT_WORKING) {
-        completion_latched = false;
-    } else if (status == SLOT_COMPLETE) {
-        completion_latched = true;
+static read_state_entry_t *find_read_state(const char *thread_id) {
+    for (size_t index = 0; index < read_state_count; index++) {
+        if (strcmp(read_states[index].thread_id, thread_id) == 0) {
+            return &read_states[index];
+        }
     }
+    return NULL;
+}
+
+static read_state_entry_t *upsert_read_state(const char *thread_id) {
+    read_state_entry_t *entry = find_read_state(thread_id);
+    if (entry != NULL) {
+        return entry;
+    }
+    if (read_state_count < MAX_THREADS) {
+        entry = &read_states[read_state_count++];
+    } else {
+        size_t oldest_index = 0;
+        for (size_t index = 1; index < read_state_count; index++) {
+            if (read_states[index].changed_at_ms <
+                read_states[oldest_index].changed_at_ms) {
+                oldest_index = index;
+            }
+        }
+        entry = &read_states[oldest_index];
+    }
+    memset(entry, 0, sizeof(*entry));
+    snprintf(entry->thread_id, sizeof(entry->thread_id), "%s", thread_id);
+    return entry;
+}
+
+static bool save_read_state_cache(void) {
+#ifdef __OBJC__
+    if (read_state_path[0] == '\0') {
+        return false;
+    }
+    @autoreleasepool {
+        NSMutableDictionary *states = [NSMutableDictionary dictionary];
+        for (size_t index = 0; index < read_state_count; index++) {
+            NSString *thread_id =
+                [NSString stringWithUTF8String:read_states[index].thread_id];
+            if (thread_id == nil) {
+                continue;
+            }
+            states[thread_id] = @{
+                @"unread" : @(read_states[index].unread),
+                @"changedAtMs" : @(read_states[index].changed_at_ms),
+            };
+        }
+        NSDictionary *root = @{
+            @"version" : @1,
+            @"threads" : states,
+        };
+        NSError *error = nil;
+        NSData *data = [NSJSONSerialization dataWithJSONObject:root
+                                                       options:0
+                                                         error:&error];
+        if (data == nil || error != nil) {
+            return false;
+        }
+        NSString *path = [NSString stringWithUTF8String:read_state_path];
+        if (path == nil || ![data writeToFile:path atomically:YES]) {
+            return false;
+        }
+        return chmod(read_state_path, 0600) == 0;
+    }
+#else
+    return false;
+#endif
+}
+
+static bool load_read_state_cache(void) {
+    read_state_count = 0;
+    memset(read_states, 0, sizeof(read_states));
+#ifdef __OBJC__
+    if (read_state_path[0] == '\0') {
+        return false;
+    }
+    @autoreleasepool {
+        NSString *path = [NSString stringWithUTF8String:read_state_path];
+        NSData *data = path == nil ? nil : [NSData dataWithContentsOfFile:path];
+        if (data == nil) {
+            return access(read_state_path, F_OK) != 0;
+        }
+        id root = [NSJSONSerialization JSONObjectWithData:data
+                                                  options:0
+                                                    error:nil];
+        if (![root isKindOfClass:[NSDictionary class]]) {
+            return false;
+        }
+        id states = [(NSDictionary *)root objectForKey:@"threads"];
+        if (![states isKindOfClass:[NSDictionary class]]) {
+            return false;
+        }
+        for (id key in (NSDictionary *)states) {
+            if (read_state_count >= MAX_THREADS ||
+                ![key isKindOfClass:[NSString class]]) {
+                continue;
+            }
+            const char *thread_id = [(NSString *)key UTF8String];
+            id value = [(NSDictionary *)states objectForKey:key];
+            if (thread_id == NULL || thread_id[0] == '\0' ||
+                strlen(thread_id) >= sizeof(read_states[0].thread_id) ||
+                ![value isKindOfClass:[NSDictionary class]]) {
+                continue;
+            }
+            id unread = [(NSDictionary *)value objectForKey:@"unread"];
+            id changed_at =
+                [(NSDictionary *)value objectForKey:@"changedAtMs"];
+            if (![unread isKindOfClass:[NSNumber class]] ||
+                ![changed_at isKindOfClass:[NSNumber class]]) {
+                continue;
+            }
+            read_state_entry_t *entry = &read_states[read_state_count++];
+            snprintf(entry->thread_id, sizeof(entry->thread_id), "%s",
+                     thread_id);
+            entry->unread = [(NSNumber *)unread boolValue];
+            entry->changed_at_ms = [(NSNumber *)changed_at longLongValue];
+        }
+        return true;
+    }
+#else
+    return false;
+#endif
+}
+
+static void apply_persisted_read_state(watched_thread_t *item) {
+    if (item->live_read_state_known || item->status != SLOT_COMPLETE) {
+        return;
+    }
+    read_state_entry_t *entry = find_read_state(item->thread_id);
+    if (entry == NULL || entry->changed_at_ms < item->status_changed_at_ms) {
+        return;
+    }
+    item->unread = entry->unread;
+}
+
+static void handle_read_state_change(const char *thread_id, bool unread,
+                                     int64_t changed_at_ms,
+                                     bool persist) {
+    if (thread_id == NULL || thread_id[0] == '\0' ||
+        strlen(thread_id) >= sizeof(read_states[0].thread_id)) {
+        return;
+    }
+    read_state_entry_t *entry = upsert_read_state(thread_id);
+    entry->unread = unread;
+    entry->changed_at_ms = changed_at_ms;
+    if (persist && !save_read_state_cache()) {
+        log_line("WARN", "Unable to persist the Codex read-state cache.");
+    }
+
+    watched_thread_t *item = find_thread(thread_id);
+    if (item == NULL) {
+        return;
+    }
+    bool changed = item->unread != unread || !item->live_read_state_known;
+    item->unread = unread;
+    item->live_read_state_known = true;
+    if (changed) {
+        char message[512];
+        snprintf(message, sizeof(message), "Task %d -> %s: %s", item->slot,
+                 unread ? "unread" : "read",
+                 item->title[0] != '\0' ? item->title : item->thread_id);
+        log_line("READ", message);
+        refresh_lights();
+    }
+}
+
+static void update_thread_status(watched_thread_t *item, slot_status_t status) {
     item->status = status;
     item->touched_at = time(NULL);
+    item->status_changed_at_ms = realtime_milliseconds();
+    if (status == SLOT_WORKING) {
+        item->unread = false;
+        item->live_read_state_known = codex_ipc_fd >= 0;
+    }
 
     char message[512];
     const char *status_name = status == SLOT_WORKING ? "working" :
@@ -896,9 +1098,16 @@ static void sanitize_title(char *title) {
     }
 }
 
-static bool load_pinned_thread_ids(
-    char pinned_thread_ids[MAX_THREADS][64], size_t *pinned_count) {
+static bool load_global_thread_state(
+    char pinned_thread_ids[MAX_THREADS][64], size_t *pinned_count,
+    bool *pinned_order_available,
+    const discovered_thread_t discovered[SIDEBAR_CATALOG_LIMIT],
+    size_t discovered_count,
+    bool unread_threads[SIDEBAR_CATALOG_LIMIT]) {
     *pinned_count = 0;
+    *pinned_order_available = false;
+    memset(unread_threads, 0,
+           sizeof(bool) * SIDEBAR_CATALOG_LIMIT);
 #ifdef __OBJC__
     if (global_state_path[0] == '\0') {
         return false;
@@ -915,39 +1124,88 @@ static bool load_pinned_thread_ids(
         if (![root isKindOfClass:[NSDictionary class]]) {
             return false;
         }
-        id values = [(NSDictionary *)root objectForKey:@"pinned-thread-ids"];
-        if (![values isKindOfClass:[NSArray class]]) {
-            return false;
+        NSDictionary *root_dictionary = (NSDictionary *)root;
+        id persisted =
+            [root_dictionary objectForKey:@"electron-persisted-atom-state"];
+        NSDictionary *persisted_dictionary =
+            [persisted isKindOfClass:[NSDictionary class]]
+                ? (NSDictionary *)persisted
+                : nil;
+
+        id pinned_values =
+            [root_dictionary objectForKey:@"pinned-thread-ids"];
+        if (![pinned_values isKindOfClass:[NSArray class]] &&
+            persisted_dictionary != nil) {
+            pinned_values =
+                [persisted_dictionary objectForKey:@"pinned-thread-ids"];
         }
-        for (id value in (NSArray *)values) {
-            if (*pinned_count >= MAX_THREADS ||
-                ![value isKindOfClass:[NSString class]]) {
-                continue;
+        if ([pinned_values isKindOfClass:[NSArray class]]) {
+            *pinned_order_available = true;
+            for (id value in (NSArray *)pinned_values) {
+                if (*pinned_count >= MAX_THREADS ||
+                    ![value isKindOfClass:[NSString class]]) {
+                    continue;
+                }
+                const char *thread_id = [(NSString *)value UTF8String];
+                if (thread_id == NULL || thread_id[0] == '\0' ||
+                    strlen(thread_id) >= sizeof(pinned_thread_ids[0])) {
+                    continue;
+                }
+                bool duplicate = false;
+                for (size_t index = 0; index < *pinned_count; index++) {
+                    if (strcmp(pinned_thread_ids[index], thread_id) == 0) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (duplicate) {
+                    continue;
+                }
+                snprintf(pinned_thread_ids[*pinned_count],
+                         sizeof(pinned_thread_ids[*pinned_count]), "%s",
+                         thread_id);
+                (*pinned_count)++;
             }
-            const char *thread_id = [(NSString *)value UTF8String];
-            if (thread_id == NULL || thread_id[0] == '\0' ||
-                strlen(thread_id) >= sizeof(pinned_thread_ids[0])) {
-                continue;
-            }
-            bool duplicate = false;
-            for (size_t index = 0; index < *pinned_count; index++) {
-                if (strcmp(pinned_thread_ids[index], thread_id) == 0) {
-                    duplicate = true;
-                    break;
+        }
+
+        id unread_by_host =
+            persisted_dictionary == nil
+                ? nil
+                : [persisted_dictionary
+                      objectForKey:@"unread-thread-ids-by-host-v1"];
+        if (unread_by_host == nil) {
+            unread_by_host =
+                [root_dictionary
+                    objectForKey:@"unread-thread-ids-by-host-v1"];
+        }
+        id unread_values = unread_by_host;
+        if ([unread_by_host isKindOfClass:[NSDictionary class]]) {
+            unread_values =
+                [(NSDictionary *)unread_by_host objectForKey:@"local"];
+        }
+        if ([unread_values isKindOfClass:[NSArray class]]) {
+            for (id value in (NSArray *)unread_values) {
+                if (![value isKindOfClass:[NSString class]]) {
+                    continue;
+                }
+                const char *thread_id = [(NSString *)value UTF8String];
+                if (thread_id == NULL) {
+                    continue;
+                }
+                for (size_t index = 0; index < discovered_count; index++) {
+                    if (strcmp(discovered[index].thread_id, thread_id) == 0) {
+                        unread_threads[index] = true;
+                        break;
+                    }
                 }
             }
-            if (duplicate) {
-                continue;
-            }
-            snprintf(pinned_thread_ids[*pinned_count],
-                     sizeof(pinned_thread_ids[*pinned_count]), "%s",
-                     thread_id);
-            (*pinned_count)++;
         }
         return true;
     }
 #else
     (void)pinned_thread_ids;
+    (void)discovered;
+    (void)discovered_count;
     return false;
 #endif
 }
@@ -990,18 +1248,13 @@ static void initialize_rollout_position(watched_thread_t *item) {
     item->initialized = true;
     fclose(file);
 
-    bool recent_completion =
-        difftime(time(NULL), file_info.st_mtime) <=
-            COMPLETE_RECOVERY_WINDOW_SECONDS;
     if (recently_updated && saw_event &&
         (last_status == SLOT_WORKING || last_status == SLOT_WAITING ||
-         last_status == SLOT_ERROR ||
-         (last_status == SLOT_COMPLETE && recent_completion))) {
+         last_status == SLOT_ERROR || last_status == SLOT_COMPLETE)) {
         item->status = last_status;
         item->touched_at = file_info.st_mtime;
-        if (last_status == SLOT_COMPLETE) {
-            completion_latched = true;
-        }
+        item->status_changed_at_ms =
+            (int64_t)file_info.st_mtime * 1000;
     }
 }
 
@@ -1070,8 +1323,11 @@ static void discover_threads(sqlite3 *database) {
 
     char pinned_thread_ids[MAX_THREADS][64];
     size_t pinned_count = 0;
-    bool pinned_order_available =
-        load_pinned_thread_ids(pinned_thread_ids, &pinned_count);
+    bool pinned_order_available = false;
+    bool unread_threads[SIDEBAR_CATALOG_LIMIT];
+    bool global_state_loaded = load_global_thread_state(
+        pinned_thread_ids, &pinned_count, &pinned_order_available,
+        discovered, discovered_count, unread_threads);
     bool ordered[SIDEBAR_CATALOG_LIMIT] = {false};
     size_t display_order[SIDEBAR_CATALOG_LIMIT];
     size_t display_count = 0;
@@ -1099,9 +1355,11 @@ static void discover_threads(sqlite3 *database) {
 
     size_t previous_count = watched_count;
     bool previous_active[MAX_THREADS];
+    bool previous_unread[MAX_THREADS];
     int previous_slots[MAX_THREADS];
     for (size_t index = 0; index < watched_count; index++) {
         previous_active[index] = watched[index].active;
+        previous_unread[index] = watched[index].unread;
         previous_slots[index] = watched[index].slot;
         watched[index].active = false;
         watched[index].slot = 0;
@@ -1127,6 +1385,10 @@ static void discover_threads(sqlite3 *database) {
             snprintf(item->title, sizeof(item->title), "%s", entry->title);
         }
         item->active = true;
+        if (global_state_loaded && !item->live_read_state_known) {
+            item->unread = unread_threads[display_order[position]];
+        }
+        apply_persisted_read_state(item);
         if (position < RGB9_INDICATOR_COUNT) {
             item->slot = (int)position + 1;
         }
@@ -1135,8 +1397,10 @@ static void discover_threads(sqlite3 *database) {
     bool active_changed = watched_count != previous_count;
     for (size_t index = 0; !active_changed && index < watched_count; index++) {
         bool previous = index < previous_count ? previous_active[index] : false;
+        bool was_unread = index < previous_count ? previous_unread[index] : false;
         int previous_slot = index < previous_count ? previous_slots[index] : 0;
         active_changed = watched[index].active != previous ||
+                         watched[index].unread != was_unread ||
                          watched[index].slot != previous_slot;
     }
     if (active_changed) {
@@ -1160,6 +1424,238 @@ static bool file_changed(const char *path, struct timespec *last_mtime) {
     }
     *last_mtime = current;
     return true;
+}
+
+static void process_global_state(sqlite3 *database,
+                                 struct timespec *last_mtime) {
+    if (file_changed(global_state_path, last_mtime)) {
+        discover_threads(database);
+    }
+}
+
+static void close_codex_ipc(bool report_disconnect) {
+    if (codex_ipc_fd >= 0) {
+        close(codex_ipc_fd);
+        codex_ipc_fd = -1;
+    }
+    codex_ipc_buffer_length = 0;
+    for (size_t index = 0; index < watched_count; index++) {
+        watched[index].live_read_state_known = false;
+    }
+    if (report_disconnect && codex_ipc_connected_once) {
+        log_line("IPC", "Codex read-state stream disconnected; retrying.");
+    }
+}
+
+#ifdef __OBJC__
+static bool send_codex_ipc_object(NSDictionary *object) {
+    if (codex_ipc_fd < 0 || object == nil) {
+        return false;
+    }
+    NSData *payload = [NSJSONSerialization dataWithJSONObject:object
+                                                      options:0
+                                                        error:nil];
+    if (payload == nil || payload.length == 0 ||
+        payload.length > UINT32_MAX) {
+        return false;
+    }
+    uint32_t length = (uint32_t)payload.length;
+    uint8_t header[4] = {
+        (uint8_t)(length & 0xFF),
+        (uint8_t)((length >> 8) & 0xFF),
+        (uint8_t)((length >> 16) & 0xFF),
+        (uint8_t)((length >> 24) & 0xFF),
+    };
+    const uint8_t *parts[2] = {header, payload.bytes};
+    size_t lengths[2] = {sizeof(header), payload.length};
+    for (size_t part = 0; part < 2; part++) {
+        size_t sent = 0;
+        while (sent < lengths[part]) {
+            ssize_t result = send(codex_ipc_fd, parts[part] + sent,
+                                  lengths[part] - sent, 0);
+            if (result > 0) {
+                sent += (size_t)result;
+                continue;
+            }
+            if (result < 0 && errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool handle_codex_ipc_payload(const uint8_t *payload, size_t length,
+                                     bool persist) {
+    @autoreleasepool {
+        NSData *data = [NSData dataWithBytes:payload length:length];
+        id root = [NSJSONSerialization JSONObjectWithData:data
+                                                  options:0
+                                                    error:nil];
+        if (![root isKindOfClass:[NSDictionary class]]) {
+            return false;
+        }
+        NSDictionary *message = (NSDictionary *)root;
+        id type = [message objectForKey:@"type"];
+        if (![type isKindOfClass:[NSString class]]) {
+            return false;
+        }
+        if ([(NSString *)type isEqualToString:@"client-discovery-request"]) {
+            id request_id = [message objectForKey:@"requestId"];
+            if (![request_id isKindOfClass:[NSString class]]) {
+                return false;
+            }
+            return send_codex_ipc_object(@{
+                @"type" : @"client-discovery-response",
+                @"requestId" : request_id,
+                @"response" : @{ @"canHandle" : @NO },
+            });
+        }
+        if (![(NSString *)type isEqualToString:@"broadcast"]) {
+            return true;
+        }
+        id method = [message objectForKey:@"method"];
+        if (![method isKindOfClass:[NSString class]] ||
+            ![(NSString *)method
+                isEqualToString:@"thread-read-state-changed"]) {
+            return true;
+        }
+        id params = [message objectForKey:@"params"];
+        if (![params isKindOfClass:[NSDictionary class]]) {
+            return false;
+        }
+        id host_id = [(NSDictionary *)params objectForKey:@"hostId"];
+        if ([host_id isKindOfClass:[NSString class]] &&
+            ![(NSString *)host_id isEqualToString:@"local"]) {
+            return true;
+        }
+        id thread_id =
+            [(NSDictionary *)params objectForKey:@"conversationId"];
+        id unread =
+            [(NSDictionary *)params objectForKey:@"hasUnreadTurn"];
+        if (![thread_id isKindOfClass:[NSString class]] ||
+            ![unread isKindOfClass:[NSNumber class]]) {
+            return false;
+        }
+        handle_read_state_change([(NSString *)thread_id UTF8String],
+                                 [(NSNumber *)unread boolValue],
+                                 realtime_milliseconds(), persist);
+        return true;
+    }
+}
+#endif
+
+static bool connect_codex_ipc(void) {
+    if (codex_ipc_fd >= 0 || ipc_socket_path[0] == '\0') {
+        return codex_ipc_fd >= 0;
+    }
+    if (strlen(ipc_socket_path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
+        return false;
+    }
+    int descriptor = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (descriptor < 0) {
+        return false;
+    }
+#if defined(SO_NOSIGPIPE)
+    int no_sigpipe = 1;
+    (void)setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE,
+                     &no_sigpipe, sizeof(no_sigpipe));
+#endif
+    struct sockaddr_un address;
+    memset(&address, 0, sizeof(address));
+    address.sun_family = AF_UNIX;
+    snprintf(address.sun_path, sizeof(address.sun_path), "%s",
+             ipc_socket_path);
+    if (connect(descriptor, (struct sockaddr *)&address,
+                sizeof(address)) != 0) {
+        close(descriptor);
+        return false;
+    }
+    codex_ipc_fd = descriptor;
+    codex_ipc_buffer_length = 0;
+#ifdef __OBJC__
+    NSString *request_id = [[NSUUID UUID] UUIDString];
+    if (!send_codex_ipc_object(@{
+            @"type" : @"request",
+            @"requestId" : request_id,
+            @"method" : @"initialize",
+            @"params" : @{ @"clientType" : @"threadlight" },
+        })) {
+        close_codex_ipc(false);
+        return false;
+    }
+#endif
+    int flags = fcntl(codex_ipc_fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(codex_ipc_fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+        close_codex_ipc(false);
+        return false;
+    }
+    codex_ipc_connected_once = true;
+    for (size_t index = 0; index < watched_count; index++) {
+        if (watched[index].active && watched[index].status == SLOT_WORKING) {
+            watched[index].unread = false;
+            watched[index].live_read_state_known = true;
+        }
+    }
+    log_line("IPC", "Listening for Codex read-state changes.");
+    return true;
+}
+
+static void process_codex_ipc(void) {
+    if (codex_ipc_fd < 0) {
+        return;
+    }
+    for (;;) {
+        if (codex_ipc_buffer_length >= sizeof(codex_ipc_buffer)) {
+            close_codex_ipc(true);
+            return;
+        }
+        ssize_t received = recv(
+            codex_ipc_fd,
+            codex_ipc_buffer + codex_ipc_buffer_length,
+            sizeof(codex_ipc_buffer) - codex_ipc_buffer_length, 0);
+        if (received > 0) {
+            codex_ipc_buffer_length += (size_t)received;
+        } else if (received == 0) {
+            close_codex_ipc(true);
+            return;
+        } else if (errno == EINTR) {
+            continue;
+        } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            break;
+        } else {
+            close_codex_ipc(true);
+            return;
+        }
+    }
+
+    size_t consumed = 0;
+    while (codex_ipc_buffer_length - consumed >= 4) {
+        const uint8_t *frame = codex_ipc_buffer + consumed;
+        uint32_t length = (uint32_t)frame[0] |
+                          ((uint32_t)frame[1] << 8) |
+                          ((uint32_t)frame[2] << 16) |
+                          ((uint32_t)frame[3] << 24);
+        if (length == 0 || length > sizeof(codex_ipc_buffer) - 4) {
+            close_codex_ipc(true);
+            return;
+        }
+        if (codex_ipc_buffer_length - consumed < (size_t)length + 4) {
+            break;
+        }
+#ifdef __OBJC__
+        if (!handle_codex_ipc_payload(frame + 4, length, true)) {
+            log_line("WARN", "Ignoring a malformed Codex IPC message.");
+        }
+#endif
+        consumed += (size_t)length + 4;
+    }
+    if (consumed > 0) {
+        memmove(codex_ipc_buffer, codex_ipc_buffer + consumed,
+                codex_ipc_buffer_length - consumed);
+        codex_ipc_buffer_length -= consumed;
+    }
 }
 
 static const char *lighting_scope_identifier(lighting_scope_t scope) {
@@ -1482,6 +1978,9 @@ static int run_daemon(void) {
         log_line("ERROR", "Unable to read brightness; using 68 percent.");
         light_brightness_percent = 68;
     }
+    if (!load_read_state_cache()) {
+        log_line("WARN", "Ignoring an invalid Codex read-state cache.");
+    }
     log_line("READY", lighting_scope == LIGHTING_SCOPE_WHOLE_BOARD
                           ? "Watching Codex task status on the whole keyboard."
                           : "Watching the first nine Codex tasks on number keys 1-9.");
@@ -1493,6 +1992,8 @@ static int run_daemon(void) {
     struct timespec scheme_mtime = {0, 0};
     struct timespec brightness_mtime = {0, 0};
     struct timespec test_mtime = {0, 0};
+    struct timespec global_state_mtime = {0, 0};
+    (void)file_changed(global_state_path, &global_state_mtime);
     while (!should_stop) {
         if (ticks % THREAD_DISCOVERY_TICK_COUNT == 0) {
             discover_threads(database);
@@ -1511,18 +2012,25 @@ static int run_daemon(void) {
             process_color_scheme(&scheme_mtime);
             process_brightness(&brightness_mtime);
             process_test_request(&test_mtime);
+            process_global_state(database, &global_state_mtime);
         }
+        if (codex_ipc_fd < 0 && ticks % IPC_RECONNECT_TICK_COUNT == 0) {
+            (void)connect_codex_ipc();
+        }
+        process_codex_ipc();
         if (test_override_until != 0 && test_override_until <= time(NULL)) {
             test_override_until = 0;
             refresh_lights();
         }
-        if (status_animation_needs_tick()) {
+        if (status_animation_needs_tick() ||
+            ticks % LIGHT_RECONCILE_TICK_COUNT == 0) {
             refresh_lights();
         }
         usleep(DAEMON_TICK_INTERVAL_US);
         ticks++;
     }
 
+    close_codex_ipc(false);
     close_rgb_device(true);
     sqlite3_close(database);
     flock(lock_fd, LOCK_UN);
@@ -1855,8 +2363,8 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     NSMenu *test_menu = [[NSMenu alloc]
         initWithTitle:L("test.title", "Test Lights")];
     NSArray<NSArray *> *tests = @[
-        @[L("test.working", "Working (breathing)"), @(SLOT_WORKING)],
-        @[L("test.complete", "Complete (two breaths, then solid)"),
+        @[L("test.working", "Working (green breathing)"), @(SLOT_WORKING)],
+        @[L("test.complete", "Completed and unread (solid blue)"),
           @(SLOT_COMPLETE)],
         @[L("test.waiting", "Waiting for input"), @(SLOT_WAITING)],
         @[L("test.error", "Task failed"), @(SLOT_ERROR)],
@@ -1892,11 +2400,11 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     }
     [help_menu addItem:[NSMenuItem separatorItem]];
     NSArray<NSString *> *color_help = @[
-        L("help.working", "Working — breathing work color"),
-        L("help.complete", "Complete — two breaths, then solid"),
+        L("help.working", "Working — breathing green"),
+        L("help.complete", "Unread result — solid blue until viewed"),
         L("help.waiting", "Waiting — input or approval needed"),
         L("help.error", "Failed — the task could not finish"),
-        L("help.idle", "Idle — no task is running"),
+        L("help.idle", "Idle or viewed — key off"),
     ];
     for (NSString *explanation in color_help) {
         NSMenuItem *item = [[NSMenuItem alloc]
@@ -2010,16 +2518,16 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
 
     NSArray<NSString *> *status_names =
         @[L("status.working", "Working"),
-          L("status.complete", "Complete"),
+          L("status.complete", "Unread"),
           L("status.waiting", "Waiting"),
           L("status.error", "Failed"),
           L("status.idle", "Idle")];
     NSArray<NSString *> *effect_names =
         @[L("effect.breathing", "Breathing"),
-          L("effect.two_breaths", "2 breaths → solid"),
+          L("effect.until_viewed", "Solid until viewed"),
           L("effect.slow_pulse", "Slow pulse"),
           L("effect.two_flashes", "2 flashes → solid"),
-          L("effect.restore", "Restore RGB")];
+          L("effect.lights_off", "Lights off")];
     NSMutableArray<StatusPreviewView *> *cards = [NSMutableArray array];
     for (NSInteger index = 0; index < 5; index++) {
         NSInteger column = index % 3;
@@ -2166,9 +2674,7 @@ static NSString *localized_string(NSString *key, NSString *fallback) {
     for (NSInteger index = 0; index < 5; index++) {
         slot_status_t status = statuses[index];
         uint8_t scale = animation_scale_for_status(status, elapsed_seconds);
-        rgb_t base = status == SLOT_IDLE
-                         ? (rgb_t){0x8E, 0x8E, 0x93}
-                         : base_color_for_status(color_scheme, status);
+        rgb_t base = base_color_for_status(color_scheme, status);
         NSColor *color = [NSColor colorWithSRGBRed:base.r / 255.0
                                              green:base.g / 255.0
                                               blue:base.b / 255.0
@@ -2547,11 +3053,13 @@ static void print_usage(const char *program) {
 }
 
 static bool parse_status(const char *name, slot_status_t *status) {
-    if (strcmp(name, "working") == 0 || strcmp(name, "blue") == 0) {
+    if (strcmp(name, "working") == 0 || strcmp(name, "green") == 0) {
         *status = SLOT_WORKING;
-    } else if (strcmp(name, "complete") == 0 || strcmp(name, "green") == 0) {
+    } else if (strcmp(name, "complete") == 0 || strcmp(name, "blue") == 0 ||
+               strcmp(name, "unread") == 0) {
         *status = SLOT_COMPLETE;
-    } else if (strcmp(name, "idle") == 0 || strcmp(name, "white") == 0) {
+    } else if (strcmp(name, "idle") == 0 || strcmp(name, "black") == 0 ||
+               strcmp(name, "white") == 0) {
         *status = SLOT_IDLE;
     } else if (strcmp(name, "waiting") == 0 || strcmp(name, "amber") == 0 ||
                strcmp(name, "orange") == 0) {

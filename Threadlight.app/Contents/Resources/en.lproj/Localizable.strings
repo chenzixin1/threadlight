@@ -12,11 +12,11 @@
 "light_settings" = "Light Settings…";
 
 "test.title" = "Test Lights";
-"test.working" = "Working (breathing)";
-"test.complete" = "Complete (two breaths, then solid)";
+"test.working" = "Working (green breathing)";
+"test.complete" = "Completed and unread (solid blue)";
 "test.waiting" = "Waiting for input";
 "test.error" = "Task failed";
-"test.idle" = "Idle";
+"test.idle" = "Idle / viewed (off)";
 "test.off" = "Turn off test";
 
 "help.title" = "How It Works";
@@ -24,11 +24,11 @@
 "help.toggle" = "Use the first item to pause task lights";
 "help.scope_board" = "Whole Keyboard — highest-priority task";
 "help.scope_keys" = "Keys 1–9 — one task per key; other keys dark";
-"help.working" = "Working — breathing work color";
-"help.complete" = "Complete — two breaths, then solid";
+"help.working" = "Working — breathing green";
+"help.complete" = "Unread result — solid blue until viewed";
 "help.waiting" = "Waiting — input or approval needed";
 "help.error" = "Failed — the task could not finish";
-"help.idle" = "Idle — no task is running";
+"help.idle" = "Idle or viewed — key off";
 
 "log.open" = "Open Log…";
 "settings.title" = "Settings";
@@ -42,11 +42,13 @@
 "window.title" = "Threadlight";
 "status.section" = "Status";
 "status.working" = "Working";
-"status.complete" = "Complete";
+"status.complete" = "Unread";
 "status.waiting" = "Waiting";
 "status.error" = "Failed";
-"status.idle" = "Idle";
+"status.idle" = "Idle / viewed";
 "effect.breathing" = "Breathing";
+"effect.until_viewed" = "Solid until viewed";
+"effect.lights_off" = "Lights off";
 "effect.two_breaths" = "2 breaths → solid";
 "effect.slow_pulse" = "Slow pulse";
 "effect.two_flashes" = "2 flashes → solid";

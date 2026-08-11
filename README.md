@@ -54,26 +54,28 @@ Threadlight 是一个轻量的 macOS 菜单栏应用。它只读观察本机 Cod
 
 | Codex 状态 | Threadlight 灯效 |
 | --- | --- |
-| 执行中 | 蓝色平滑呼吸 |
-| 刚刚完成 | 绿色呼吸两次，然后常亮至下一项任务开始 |
+| 执行中 | 绿色平滑呼吸 |
+| 最近完成、结果尚未查看 | 蓝色常亮，与 Codex App 侧栏蓝点同步 |
 | 等待输入或批准 | 橙色慢速呼吸 |
 | 任务失败 | 红色双闪后常亮；用户主动取消不算失败 |
-| 空闲 | 整板模式恢复原灯效；数字键模式显示白色 |
+| 已查看或空闲 | 整板模式恢复原灯效；数字键模式熄灭 |
 | 暂停或退出 | 恢复键盘原有灯效 |
+
+Codex App 中的任务蓝点消失后，对应数字键也会自动熄灭。蓝色要求 Threadlight 最近确实观察到完成事件并且结果仍未读；全局状态里没有及时清理的陈旧未读 ID 不会单独点亮按键。
 
 在“整个键盘”范围中，多个任务同时存在时显示优先级最高的状态：
 
 ```text
-任务失败 > 等待操作 > 已完成提示 > 执行中 > 空闲
+任务失败 > 等待操作 > 执行中 > 未读完成结果 > 空闲
 ```
 
 ## 三套配色
 
-| 方案 | 执行中 | 已完成 | 等待 | 失败 |
+| 方案 | 执行中 | 完成待查看 | 等待 | 失败 |
 | --- | --- | --- | --- | --- |
-| Codex | `#304FFE` | `#00FF4C` | `#FF6D00` | `#FF0033` |
-| Ocean | `#00B8FF` | `#00E5A8` | `#FFB000` | `#FF416C` |
-| Violet | `#8B5CF6` | `#2DD4BF` | `#F59E0B` | `#E11D48` |
+| Codex | `#00FF4C` | `#304FFE` | `#FF6D00` | `#FF0033` |
+| Ocean | `#00E5A8` | `#00B8FF` | `#FFB000` | `#FF416C` |
+| Violet | `#2DD4BF` | `#8B5CF6` | `#F59E0B` | `#E11D48` |
 
 设置窗口会实时预览各状态的动画。界面使用 Core Animation 以 60 FPS 绘制，键盘通过 Raw HID 以 30 FPS 更新。亮度可在 20%–100% 之间调节。
 
@@ -161,10 +163,12 @@ cd threadlight
 
 ## 工作原理与隐私
 
-1. 只读打开 `~/.codex/state_5.sqlite` 发现最近的未归档任务，并读取 `~/.codex/.codex-global-state.json` 中的侧栏置顶顺序。
-2. 只读监视对应 rollout JSONL，识别执行、完成、等待和错误事件。
-3. 整板模式通过 QMK/VIA 32 字节 Raw HID 设置 HSV；数字键模式通过 Threadlight RGB9 的 `0xB0` 覆盖协议，让固件在同一帧清空整板背景并写入 9 颗 LED。
+1. 只读打开 `~/.codex/state_5.sqlite` 发现最近的未归档任务，并读取 `~/.codex/.codex-global-state.json` 中的侧栏置顶顺序和未读任务列表。
+2. 只读监视对应 rollout JSONL，识别执行、完成、等待和错误事件；任务在 Codex App 中被查看后，未读列表变化会让对应数字键熄灭。
+3. 整板模式通过 QMK/VIA 32 字节 Raw HID 设置 HSV；数字键模式通过 Threadlight RGB9 的 `0xB0` 覆盖协议，每次都写入完整九键帧，空闲键明确写黑，并在同一帧清空整板背景。
 4. 菜单进程管理一个灯控子进程；没有快捷键观察器。
+
+除文件变化触发的即时更新外，Threadlight 还会每 5 秒重发一次完整目标状态。这样即使发生异步更新遗漏、USB 短暂断连、睡眠唤醒或旧灯光帧残留，键盘也会自动恢复到 Codex 当前状态。
 
 两种输出都只修改运行时灯光状态，不写键盘 EEPROM。数字键模式不会修改键位，也不监听数字键输入。
 
@@ -240,26 +244,28 @@ Lighting scope decides where status appears. Color scheme and brightness decide 
 
 | Codex state | Threadlight behavior |
 | --- | --- |
-| Working | Smooth blue breathing |
-| Just completed | Two green breaths, then solid until the next task starts |
+| Working | Smooth green breathing |
+| Recently completed, result not yet viewed | Solid blue, synchronized with the Codex sidebar dot |
 | Waiting for input or approval | Slow amber breathing |
 | Failed | Two red flashes, then solid; user interruption is not a failure |
-| Idle | Restore the original effect in Whole Keyboard scope; show white in Number Keys scope |
+| Viewed or idle | Restore the original effect in Whole Keyboard scope; turn the key off in Number Keys scope |
 | Paused or quit | Restore the keyboard's previous RGB effect |
+
+When the task's blue dot disappears in the Codex app, its number key turns off automatically. Threadlight listens to Codex's local `thread-read-state-changed` event, treats that live event as authoritative, and persists the latest read state across its own restarts. Blue requires both a recently observed completion event and an unread result; stale IDs left behind in the global unread cache do not light a key by themselves, and an old read event cannot suppress a later completion.
 
 In Whole Keyboard scope, Threadlight shows the highest-priority state:
 
 ```text
-Failed > Waiting > Completion indication > Working > Idle
+Failed > Waiting > Working > Unread completion > Idle
 ```
 
 ## Color schemes
 
-| Scheme | Working | Complete | Waiting | Failed |
+| Scheme | Working | Completed and unread | Waiting | Failed |
 | --- | --- | --- | --- | --- |
-| Codex | `#304FFE` | `#00FF4C` | `#FF6D00` | `#FF0033` |
-| Ocean | `#00B8FF` | `#00E5A8` | `#FFB000` | `#FF416C` |
-| Violet | `#8B5CF6` | `#2DD4BF` | `#F59E0B` | `#E11D48` |
+| Codex | `#00FF4C` | `#304FFE` | `#FF6D00` | `#FF0033` |
+| Ocean | `#00E5A8` | `#00B8FF` | `#FFB000` | `#FF416C` |
+| Violet | `#2DD4BF` | `#8B5CF6` | `#F59E0B` | `#E11D48` |
 
 The settings window previews every state animation at 60 FPS through Core Animation. Raw HID updates the keyboard at 30 FPS. Brightness is adjustable from 20% to 100%.
 
@@ -341,14 +347,17 @@ The menu also provides pause, logs, launch at login, the GitHub project, and Qui
 
 ## How it works and privacy
 
-1. Opens `~/.codex/state_5.sqlite` read-only to discover recent unarchived tasks, and reads the sidebar pin order from `~/.codex/.codex-global-state.json`.
+1. Opens `~/.codex/state_5.sqlite` read-only to discover recent unarchived tasks, and reads sidebar pin order plus startup unread hints from `~/.codex/.codex-global-state.json`.
 2. Watches the corresponding rollout JSONL files read-only for working, complete, waiting, and error events.
-3. Whole Keyboard scope sends HSV through 32-byte QMK/VIA Raw HID reports; Number Keys scope uses Threadlight RGB9 command `0xB0` so the firmware clears the board background and writes nine volatile LED colors in the same frame.
-4. Runs one menu process and one lighting child process; there is no shortcut observer.
+3. Connects to Codex's local Unix-domain IPC socket and listens only for `thread-read-state-changed`. Live read/unread events override the startup hint immediately; the latest event is saved in `~/Library/Application Support/Threadlight/codex-read-state.json` so a Threadlight restart cannot resurrect a stale light.
+4. Whole Keyboard scope sends HSV through 32-byte QMK/VIA Raw HID reports; Number Keys scope uses Threadlight RGB9 command `0xB0` to write a complete nine-key frame every time, explicitly writing idle keys as black while the firmware clears the board background in the same frame.
+5. Runs one menu process and one lighting child process; there is no shortcut observer.
+
+In addition to immediate file-triggered updates, Threadlight resends the complete desired state every five seconds. This self-heals missed asynchronous updates, brief USB disconnects, sleep/wake transitions, and stale lighting frames.
 
 Neither output writes keyboard EEPROM. Number Keys scope does not remap keys or monitor number-key input.
 
-Threadlight makes no network requests and does not upload Codex data, task titles, or task content.
+The Codex event stream stays on the same Mac through a user-owned local socket. Threadlight makes no network requests and does not upload Codex data, task titles, or task content.
 
 ## Command line
 
