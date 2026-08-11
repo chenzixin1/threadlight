@@ -55,13 +55,13 @@ Threadlight 是一个轻量的 macOS 菜单栏应用。它只读观察本机 Cod
 | Codex 状态 | Threadlight 灯效 |
 | --- | --- |
 | 执行中 | 绿色平滑呼吸 |
-| 已完成、结果尚未查看 | 蓝色常亮，与 Codex App 侧栏蓝点同步 |
+| 最近完成、结果尚未查看 | 蓝色常亮，与 Codex App 侧栏蓝点同步 |
 | 等待输入或批准 | 橙色慢速呼吸 |
 | 任务失败 | 红色双闪后常亮；用户主动取消不算失败 |
 | 已查看或空闲 | 整板模式恢复原灯效；数字键模式熄灭 |
 | 暂停或退出 | 恢复键盘原有灯效 |
 
-Codex App 中的任务蓝点消失后，对应数字键也会自动熄灭。蓝色表示“有尚未查看的完成结果”，而不是永久保存的历史完成状态。
+Codex App 中的任务蓝点消失后，对应数字键也会自动熄灭。蓝色要求 Threadlight 最近确实观察到完成事件并且结果仍未读；全局状态里没有及时清理的陈旧未读 ID 不会单独点亮按键。
 
 在“整个键盘”范围中，多个任务同时存在时显示优先级最高的状态：
 
@@ -245,13 +245,13 @@ Lighting scope decides where status appears. Color scheme and brightness decide 
 | Codex state | Threadlight behavior |
 | --- | --- |
 | Working | Smooth green breathing |
-| Completed, result not yet viewed | Solid blue, synchronized with the Codex sidebar dot |
+| Recently completed, result not yet viewed | Solid blue, synchronized with the Codex sidebar dot |
 | Waiting for input or approval | Slow amber breathing |
 | Failed | Two red flashes, then solid; user interruption is not a failure |
 | Viewed or idle | Restore the original effect in Whole Keyboard scope; turn the key off in Number Keys scope |
 | Paused or quit | Restore the keyboard's previous RGB effect |
 
-When the task's blue dot disappears in the Codex app, its number key turns off automatically. Blue means “completed result not yet viewed,” not a permanent historical completion state.
+When the task's blue dot disappears in the Codex app, its number key turns off automatically. Blue requires both a recently observed completion event and an unread result; stale IDs left behind in the global unread cache do not light a key by themselves.
 
 In Whole Keyboard scope, Threadlight shows the highest-priority state:
 

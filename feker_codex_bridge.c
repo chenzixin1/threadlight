@@ -560,7 +560,9 @@ static slot_status_t visible_status_for_thread(
         item->status == SLOT_ERROR) {
         return item->status;
     }
-    return item->unread ? SLOT_COMPLETE : SLOT_OFF;
+    return item->status == SLOT_COMPLETE && item->unread
+               ? SLOT_COMPLETE
+               : SLOT_OFF;
 }
 
 static slot_status_t aggregate_watched_status(void) {

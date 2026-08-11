@@ -283,6 +283,12 @@ int main(void) {
                frame_colors[6].b == 0x00,
            "a previously lit idle key must be cleared in the same frame");
 
+    watched_thread_t stale_unread = {0};
+    stale_unread.status = SLOT_IDLE;
+    stale_unread.unread = true;
+    expect(visible_status_for_thread(&stale_unread) == SLOT_OFF,
+           "a stale unread cache entry without a recent completion must stay dark");
+
     sqlite3_close(database);
     unlink(first_path);
     unlink(subagent_path);
