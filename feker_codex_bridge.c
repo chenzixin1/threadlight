@@ -13,8 +13,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -44,6 +46,8 @@
 #define EVENT_POLL_TICK_COUNT 3
 #define THREAD_DISCOVERY_TICK_COUNT 60
 #define LIGHT_RECONCILE_TICK_COUNT 150
+#define IPC_RECONNECT_TICK_COUNT 150
+#define IPC_FRAME_BUFFER_SIZE (256 * 1024)
 #define SETTINGS_PREVIEW_INTERVAL (1.0 / 60.0)
 #define WORKING_BREATH_SECONDS 3.6
 #define WAITING_BREATH_SECONDS 4.4
@@ -88,9 +92,11 @@ typedef struct {
     int slot;
     slot_status_t status;
     time_t touched_at;
+    int64_t status_changed_at_ms;
     bool initialized;
     bool active;
     bool unread;
+    bool live_read_state_known;
 } watched_thread_t;
 
 typedef struct {
@@ -98,6 +104,12 @@ typedef struct {
     char rollout_path[PATH_MAX];
     char title[MAX_TITLE];
 } discovered_thread_t;
+
+typedef struct {
+    char thread_id[64];
+    int64_t changed_at_ms;
+    bool unread;
+} read_state_entry_t;
 
 static volatile sig_atomic_t should_stop = 0;
 static watched_thread_t watched[MAX_THREADS];
@@ -125,8 +137,10 @@ static char task_lights_enabled_path[PATH_MAX];
 static char lighting_scope_path[PATH_MAX];
 static char color_scheme_path[PATH_MAX];
 static char brightness_path[PATH_MAX];
+static char read_state_path[PATH_MAX];
 static char database_path[PATH_MAX];
 static char global_state_path[PATH_MAX];
+static char ipc_socket_path[PATH_MAX];
 static char log_path[PATH_MAX];
 static char executable_path[PATH_MAX];
 static slot_status_t test_status = SLOT_OFF;
@@ -138,6 +152,12 @@ static uint8_t light_brightness_percent = 68;
 static double animation_started_at = 0.0;
 static slot_status_t rendered_status = SLOT_OFF;
 static slot_status_t rendered_number_key_statuses[RGB9_INDICATOR_COUNT];
+static read_state_entry_t read_states[MAX_THREADS];
+static size_t read_state_count = 0;
+static int codex_ipc_fd = -1;
+static uint8_t codex_ipc_buffer[IPC_FRAME_BUFFER_SIZE];
+static size_t codex_ipc_buffer_length = 0;
+static bool codex_ipc_connected_once = false;
 
 static void handle_signal(int signal_number) {
     (void)signal_number;
@@ -148,6 +168,12 @@ static double monotonic_seconds(void) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     return (double)now.tv_sec + (double)now.tv_nsec / 1000000000.0;
+}
+
+static int64_t realtime_milliseconds(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
 }
 
 static void log_line(const char *level, const char *message) {
@@ -201,9 +227,13 @@ static bool initialize_paths(void) {
              "%s/color-scheme.txt", app_support_dir);
     snprintf(brightness_path, sizeof(brightness_path),
              "%s/brightness.txt", app_support_dir);
+    snprintf(read_state_path, sizeof(read_state_path),
+             "%s/codex-read-state.json", app_support_dir);
     snprintf(database_path, sizeof(database_path), "%s/.codex/state_5.sqlite", home);
     snprintf(global_state_path, sizeof(global_state_path),
              "%s/.codex/.codex-global-state.json", home);
+    snprintf(ipc_socket_path, sizeof(ipc_socket_path),
+             "%s/.codex/ipc/ipc.sock", home);
     snprintf(log_path, sizeof(log_path), "%s/Threadlight.log", logs_dir);
 
     return ensure_directory(library_dir) &&
@@ -839,9 +869,182 @@ static watched_thread_t *find_thread(const char *thread_id) {
     return NULL;
 }
 
+static read_state_entry_t *find_read_state(const char *thread_id) {
+    for (size_t index = 0; index < read_state_count; index++) {
+        if (strcmp(read_states[index].thread_id, thread_id) == 0) {
+            return &read_states[index];
+        }
+    }
+    return NULL;
+}
+
+static read_state_entry_t *upsert_read_state(const char *thread_id) {
+    read_state_entry_t *entry = find_read_state(thread_id);
+    if (entry != NULL) {
+        return entry;
+    }
+    if (read_state_count < MAX_THREADS) {
+        entry = &read_states[read_state_count++];
+    } else {
+        size_t oldest_index = 0;
+        for (size_t index = 1; index < read_state_count; index++) {
+            if (read_states[index].changed_at_ms <
+                read_states[oldest_index].changed_at_ms) {
+                oldest_index = index;
+            }
+        }
+        entry = &read_states[oldest_index];
+    }
+    memset(entry, 0, sizeof(*entry));
+    snprintf(entry->thread_id, sizeof(entry->thread_id), "%s", thread_id);
+    return entry;
+}
+
+static bool save_read_state_cache(void) {
+#ifdef __OBJC__
+    if (read_state_path[0] == '\0') {
+        return false;
+    }
+    @autoreleasepool {
+        NSMutableDictionary *states = [NSMutableDictionary dictionary];
+        for (size_t index = 0; index < read_state_count; index++) {
+            NSString *thread_id =
+                [NSString stringWithUTF8String:read_states[index].thread_id];
+            if (thread_id == nil) {
+                continue;
+            }
+            states[thread_id] = @{
+                @"unread" : @(read_states[index].unread),
+                @"changedAtMs" : @(read_states[index].changed_at_ms),
+            };
+        }
+        NSDictionary *root = @{
+            @"version" : @1,
+            @"threads" : states,
+        };
+        NSError *error = nil;
+        NSData *data = [NSJSONSerialization dataWithJSONObject:root
+                                                       options:0
+                                                         error:&error];
+        if (data == nil || error != nil) {
+            return false;
+        }
+        NSString *path = [NSString stringWithUTF8String:read_state_path];
+        if (path == nil || ![data writeToFile:path atomically:YES]) {
+            return false;
+        }
+        return chmod(read_state_path, 0600) == 0;
+    }
+#else
+    return false;
+#endif
+}
+
+static bool load_read_state_cache(void) {
+    read_state_count = 0;
+    memset(read_states, 0, sizeof(read_states));
+#ifdef __OBJC__
+    if (read_state_path[0] == '\0') {
+        return false;
+    }
+    @autoreleasepool {
+        NSString *path = [NSString stringWithUTF8String:read_state_path];
+        NSData *data = path == nil ? nil : [NSData dataWithContentsOfFile:path];
+        if (data == nil) {
+            return access(read_state_path, F_OK) != 0;
+        }
+        id root = [NSJSONSerialization JSONObjectWithData:data
+                                                  options:0
+                                                    error:nil];
+        if (![root isKindOfClass:[NSDictionary class]]) {
+            return false;
+        }
+        id states = [(NSDictionary *)root objectForKey:@"threads"];
+        if (![states isKindOfClass:[NSDictionary class]]) {
+            return false;
+        }
+        for (id key in (NSDictionary *)states) {
+            if (read_state_count >= MAX_THREADS ||
+                ![key isKindOfClass:[NSString class]]) {
+                continue;
+            }
+            const char *thread_id = [(NSString *)key UTF8String];
+            id value = [(NSDictionary *)states objectForKey:key];
+            if (thread_id == NULL || thread_id[0] == '\0' ||
+                strlen(thread_id) >= sizeof(read_states[0].thread_id) ||
+                ![value isKindOfClass:[NSDictionary class]]) {
+                continue;
+            }
+            id unread = [(NSDictionary *)value objectForKey:@"unread"];
+            id changed_at =
+                [(NSDictionary *)value objectForKey:@"changedAtMs"];
+            if (![unread isKindOfClass:[NSNumber class]] ||
+                ![changed_at isKindOfClass:[NSNumber class]]) {
+                continue;
+            }
+            read_state_entry_t *entry = &read_states[read_state_count++];
+            snprintf(entry->thread_id, sizeof(entry->thread_id), "%s",
+                     thread_id);
+            entry->unread = [(NSNumber *)unread boolValue];
+            entry->changed_at_ms = [(NSNumber *)changed_at longLongValue];
+        }
+        return true;
+    }
+#else
+    return false;
+#endif
+}
+
+static void apply_persisted_read_state(watched_thread_t *item) {
+    if (item->live_read_state_known || item->status != SLOT_COMPLETE) {
+        return;
+    }
+    read_state_entry_t *entry = find_read_state(item->thread_id);
+    if (entry == NULL || entry->changed_at_ms < item->status_changed_at_ms) {
+        return;
+    }
+    item->unread = entry->unread;
+}
+
+static void handle_read_state_change(const char *thread_id, bool unread,
+                                     int64_t changed_at_ms,
+                                     bool persist) {
+    if (thread_id == NULL || thread_id[0] == '\0' ||
+        strlen(thread_id) >= sizeof(read_states[0].thread_id)) {
+        return;
+    }
+    read_state_entry_t *entry = upsert_read_state(thread_id);
+    entry->unread = unread;
+    entry->changed_at_ms = changed_at_ms;
+    if (persist && !save_read_state_cache()) {
+        log_line("WARN", "Unable to persist the Codex read-state cache.");
+    }
+
+    watched_thread_t *item = find_thread(thread_id);
+    if (item == NULL) {
+        return;
+    }
+    bool changed = item->unread != unread || !item->live_read_state_known;
+    item->unread = unread;
+    item->live_read_state_known = true;
+    if (changed) {
+        char message[512];
+        snprintf(message, sizeof(message), "Task %d -> %s: %s", item->slot,
+                 unread ? "unread" : "read",
+                 item->title[0] != '\0' ? item->title : item->thread_id);
+        log_line("READ", message);
+        refresh_lights();
+    }
+}
+
 static void update_thread_status(watched_thread_t *item, slot_status_t status) {
     item->status = status;
     item->touched_at = time(NULL);
+    item->status_changed_at_ms = realtime_milliseconds();
+    if (status == SLOT_WORKING) {
+        item->unread = false;
+        item->live_read_state_known = codex_ipc_fd >= 0;
+    }
 
     char message[512];
     const char *status_name = status == SLOT_WORKING ? "working" :
@@ -1050,6 +1253,8 @@ static void initialize_rollout_position(watched_thread_t *item) {
          last_status == SLOT_ERROR || last_status == SLOT_COMPLETE)) {
         item->status = last_status;
         item->touched_at = file_info.st_mtime;
+        item->status_changed_at_ms =
+            (int64_t)file_info.st_mtime * 1000;
     }
 }
 
@@ -1180,9 +1385,10 @@ static void discover_threads(sqlite3 *database) {
             snprintf(item->title, sizeof(item->title), "%s", entry->title);
         }
         item->active = true;
-        if (global_state_loaded) {
+        if (global_state_loaded && !item->live_read_state_known) {
             item->unread = unread_threads[display_order[position]];
         }
+        apply_persisted_read_state(item);
         if (position < RGB9_INDICATOR_COUNT) {
             item->slot = (int)position + 1;
         }
@@ -1224,6 +1430,231 @@ static void process_global_state(sqlite3 *database,
                                  struct timespec *last_mtime) {
     if (file_changed(global_state_path, last_mtime)) {
         discover_threads(database);
+    }
+}
+
+static void close_codex_ipc(bool report_disconnect) {
+    if (codex_ipc_fd >= 0) {
+        close(codex_ipc_fd);
+        codex_ipc_fd = -1;
+    }
+    codex_ipc_buffer_length = 0;
+    for (size_t index = 0; index < watched_count; index++) {
+        watched[index].live_read_state_known = false;
+    }
+    if (report_disconnect && codex_ipc_connected_once) {
+        log_line("IPC", "Codex read-state stream disconnected; retrying.");
+    }
+}
+
+#ifdef __OBJC__
+static bool send_codex_ipc_object(NSDictionary *object) {
+    if (codex_ipc_fd < 0 || object == nil) {
+        return false;
+    }
+    NSData *payload = [NSJSONSerialization dataWithJSONObject:object
+                                                      options:0
+                                                        error:nil];
+    if (payload == nil || payload.length == 0 ||
+        payload.length > UINT32_MAX) {
+        return false;
+    }
+    uint32_t length = (uint32_t)payload.length;
+    uint8_t header[4] = {
+        (uint8_t)(length & 0xFF),
+        (uint8_t)((length >> 8) & 0xFF),
+        (uint8_t)((length >> 16) & 0xFF),
+        (uint8_t)((length >> 24) & 0xFF),
+    };
+    const uint8_t *parts[2] = {header, payload.bytes};
+    size_t lengths[2] = {sizeof(header), payload.length};
+    for (size_t part = 0; part < 2; part++) {
+        size_t sent = 0;
+        while (sent < lengths[part]) {
+            ssize_t result = send(codex_ipc_fd, parts[part] + sent,
+                                  lengths[part] - sent, 0);
+            if (result > 0) {
+                sent += (size_t)result;
+                continue;
+            }
+            if (result < 0 && errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool handle_codex_ipc_payload(const uint8_t *payload, size_t length,
+                                     bool persist) {
+    @autoreleasepool {
+        NSData *data = [NSData dataWithBytes:payload length:length];
+        id root = [NSJSONSerialization JSONObjectWithData:data
+                                                  options:0
+                                                    error:nil];
+        if (![root isKindOfClass:[NSDictionary class]]) {
+            return false;
+        }
+        NSDictionary *message = (NSDictionary *)root;
+        id type = [message objectForKey:@"type"];
+        if (![type isKindOfClass:[NSString class]]) {
+            return false;
+        }
+        if ([(NSString *)type isEqualToString:@"client-discovery-request"]) {
+            id request_id = [message objectForKey:@"requestId"];
+            if (![request_id isKindOfClass:[NSString class]]) {
+                return false;
+            }
+            return send_codex_ipc_object(@{
+                @"type" : @"client-discovery-response",
+                @"requestId" : request_id,
+                @"response" : @{ @"canHandle" : @NO },
+            });
+        }
+        if (![(NSString *)type isEqualToString:@"broadcast"]) {
+            return true;
+        }
+        id method = [message objectForKey:@"method"];
+        if (![method isKindOfClass:[NSString class]] ||
+            ![(NSString *)method
+                isEqualToString:@"thread-read-state-changed"]) {
+            return true;
+        }
+        id params = [message objectForKey:@"params"];
+        if (![params isKindOfClass:[NSDictionary class]]) {
+            return false;
+        }
+        id host_id = [(NSDictionary *)params objectForKey:@"hostId"];
+        if ([host_id isKindOfClass:[NSString class]] &&
+            ![(NSString *)host_id isEqualToString:@"local"]) {
+            return true;
+        }
+        id thread_id =
+            [(NSDictionary *)params objectForKey:@"conversationId"];
+        id unread =
+            [(NSDictionary *)params objectForKey:@"hasUnreadTurn"];
+        if (![thread_id isKindOfClass:[NSString class]] ||
+            ![unread isKindOfClass:[NSNumber class]]) {
+            return false;
+        }
+        handle_read_state_change([(NSString *)thread_id UTF8String],
+                                 [(NSNumber *)unread boolValue],
+                                 realtime_milliseconds(), persist);
+        return true;
+    }
+}
+#endif
+
+static bool connect_codex_ipc(void) {
+    if (codex_ipc_fd >= 0 || ipc_socket_path[0] == '\0') {
+        return codex_ipc_fd >= 0;
+    }
+    if (strlen(ipc_socket_path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
+        return false;
+    }
+    int descriptor = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (descriptor < 0) {
+        return false;
+    }
+#if defined(SO_NOSIGPIPE)
+    int no_sigpipe = 1;
+    (void)setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE,
+                     &no_sigpipe, sizeof(no_sigpipe));
+#endif
+    struct sockaddr_un address;
+    memset(&address, 0, sizeof(address));
+    address.sun_family = AF_UNIX;
+    snprintf(address.sun_path, sizeof(address.sun_path), "%s",
+             ipc_socket_path);
+    if (connect(descriptor, (struct sockaddr *)&address,
+                sizeof(address)) != 0) {
+        close(descriptor);
+        return false;
+    }
+    codex_ipc_fd = descriptor;
+    codex_ipc_buffer_length = 0;
+#ifdef __OBJC__
+    NSString *request_id = [[NSUUID UUID] UUIDString];
+    if (!send_codex_ipc_object(@{
+            @"type" : @"request",
+            @"requestId" : request_id,
+            @"method" : @"initialize",
+            @"params" : @{ @"clientType" : @"threadlight" },
+        })) {
+        close_codex_ipc(false);
+        return false;
+    }
+#endif
+    int flags = fcntl(codex_ipc_fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(codex_ipc_fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+        close_codex_ipc(false);
+        return false;
+    }
+    codex_ipc_connected_once = true;
+    for (size_t index = 0; index < watched_count; index++) {
+        if (watched[index].active && watched[index].status == SLOT_WORKING) {
+            watched[index].unread = false;
+            watched[index].live_read_state_known = true;
+        }
+    }
+    log_line("IPC", "Listening for Codex read-state changes.");
+    return true;
+}
+
+static void process_codex_ipc(void) {
+    if (codex_ipc_fd < 0) {
+        return;
+    }
+    for (;;) {
+        if (codex_ipc_buffer_length >= sizeof(codex_ipc_buffer)) {
+            close_codex_ipc(true);
+            return;
+        }
+        ssize_t received = recv(
+            codex_ipc_fd,
+            codex_ipc_buffer + codex_ipc_buffer_length,
+            sizeof(codex_ipc_buffer) - codex_ipc_buffer_length, 0);
+        if (received > 0) {
+            codex_ipc_buffer_length += (size_t)received;
+        } else if (received == 0) {
+            close_codex_ipc(true);
+            return;
+        } else if (errno == EINTR) {
+            continue;
+        } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            break;
+        } else {
+            close_codex_ipc(true);
+            return;
+        }
+    }
+
+    size_t consumed = 0;
+    while (codex_ipc_buffer_length - consumed >= 4) {
+        const uint8_t *frame = codex_ipc_buffer + consumed;
+        uint32_t length = (uint32_t)frame[0] |
+                          ((uint32_t)frame[1] << 8) |
+                          ((uint32_t)frame[2] << 16) |
+                          ((uint32_t)frame[3] << 24);
+        if (length == 0 || length > sizeof(codex_ipc_buffer) - 4) {
+            close_codex_ipc(true);
+            return;
+        }
+        if (codex_ipc_buffer_length - consumed < (size_t)length + 4) {
+            break;
+        }
+#ifdef __OBJC__
+        if (!handle_codex_ipc_payload(frame + 4, length, true)) {
+            log_line("WARN", "Ignoring a malformed Codex IPC message.");
+        }
+#endif
+        consumed += (size_t)length + 4;
+    }
+    if (consumed > 0) {
+        memmove(codex_ipc_buffer, codex_ipc_buffer + consumed,
+                codex_ipc_buffer_length - consumed);
+        codex_ipc_buffer_length -= consumed;
     }
 }
 
@@ -1547,6 +1978,9 @@ static int run_daemon(void) {
         log_line("ERROR", "Unable to read brightness; using 68 percent.");
         light_brightness_percent = 68;
     }
+    if (!load_read_state_cache()) {
+        log_line("WARN", "Ignoring an invalid Codex read-state cache.");
+    }
     log_line("READY", lighting_scope == LIGHTING_SCOPE_WHOLE_BOARD
                           ? "Watching Codex task status on the whole keyboard."
                           : "Watching the first nine Codex tasks on number keys 1-9.");
@@ -1580,6 +2014,10 @@ static int run_daemon(void) {
             process_test_request(&test_mtime);
             process_global_state(database, &global_state_mtime);
         }
+        if (codex_ipc_fd < 0 && ticks % IPC_RECONNECT_TICK_COUNT == 0) {
+            (void)connect_codex_ipc();
+        }
+        process_codex_ipc();
         if (test_override_until != 0 && test_override_until <= time(NULL)) {
             test_override_until = 0;
             refresh_lights();
@@ -1592,6 +2030,7 @@ static int run_daemon(void) {
         ticks++;
     }
 
+    close_codex_ipc(false);
     close_rgb_device(true);
     sqlite3_close(database);
     flock(lock_fd, LOCK_UN);

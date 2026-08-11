@@ -251,7 +251,7 @@ Lighting scope decides where status appears. Color scheme and brightness decide 
 | Viewed or idle | Restore the original effect in Whole Keyboard scope; turn the key off in Number Keys scope |
 | Paused or quit | Restore the keyboard's previous RGB effect |
 
-When the task's blue dot disappears in the Codex app, its number key turns off automatically. Blue requires both a recently observed completion event and an unread result; stale IDs left behind in the global unread cache do not light a key by themselves.
+When the task's blue dot disappears in the Codex app, its number key turns off automatically. Threadlight listens to Codex's local `thread-read-state-changed` event, treats that live event as authoritative, and persists the latest read state across its own restarts. Blue requires both a recently observed completion event and an unread result; stale IDs left behind in the global unread cache do not light a key by themselves, and an old read event cannot suppress a later completion.
 
 In Whole Keyboard scope, Threadlight shows the highest-priority state:
 
@@ -347,16 +347,17 @@ The menu also provides pause, logs, launch at login, the GitHub project, and Qui
 
 ## How it works and privacy
 
-1. Opens `~/.codex/state_5.sqlite` read-only to discover recent unarchived tasks, and reads sidebar pin order plus unread task IDs from `~/.codex/.codex-global-state.json`.
-2. Watches the corresponding rollout JSONL files read-only for working, complete, waiting, and error events; when a task is viewed in the Codex app, the unread-list change turns its number key off.
-3. Whole Keyboard scope sends HSV through 32-byte QMK/VIA Raw HID reports; Number Keys scope uses Threadlight RGB9 command `0xB0` to write a complete nine-key frame every time, explicitly writing idle keys as black while the firmware clears the board background in the same frame.
-4. Runs one menu process and one lighting child process; there is no shortcut observer.
+1. Opens `~/.codex/state_5.sqlite` read-only to discover recent unarchived tasks, and reads sidebar pin order plus startup unread hints from `~/.codex/.codex-global-state.json`.
+2. Watches the corresponding rollout JSONL files read-only for working, complete, waiting, and error events.
+3. Connects to Codex's local Unix-domain IPC socket and listens only for `thread-read-state-changed`. Live read/unread events override the startup hint immediately; the latest event is saved in `~/Library/Application Support/Threadlight/codex-read-state.json` so a Threadlight restart cannot resurrect a stale light.
+4. Whole Keyboard scope sends HSV through 32-byte QMK/VIA Raw HID reports; Number Keys scope uses Threadlight RGB9 command `0xB0` to write a complete nine-key frame every time, explicitly writing idle keys as black while the firmware clears the board background in the same frame.
+5. Runs one menu process and one lighting child process; there is no shortcut observer.
 
 In addition to immediate file-triggered updates, Threadlight resends the complete desired state every five seconds. This self-heals missed asynchronous updates, brief USB disconnects, sleep/wake transitions, and stale lighting frames.
 
 Neither output writes keyboard EEPROM. Number Keys scope does not remap keys or monitor number-key input.
 
-Threadlight makes no network requests and does not upload Codex data, task titles, or task content.
+The Codex event stream stays on the same Mac through a user-owned local socket. Threadlight makes no network requests and does not upload Codex data, task titles, or task content.
 
 ## Command line
 
