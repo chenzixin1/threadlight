@@ -1,0 +1,58 @@
+{
+  "firmware_name": "Threadlight RGB9 v0.2.0",
+  "compatibility": {
+    "model": "FEKER Alice80 tri-mode",
+    "normal_usb_vid_pid": "36B0:3042",
+    "bootloader_usb_vid_pid": "03EB:2045",
+    "bootloader_product": "RDMCTMZT DFU",
+    "stock_firmware_version": "V0103"
+  },
+  "warning": "Experimental firmware. Verify the exact USB identity and keep the matching stock V0103 recovery image before flashing.",
+  "features": [
+    "nine-key RGB overlay",
+    "focus background blackout"
+  ],
+  "input_sha256": "9064b1c9feb89146e0d7c02bb80903d7430dd73e607a85a53d1b7b7368b279c4",
+  "output_file": "FEKER-Alice80-36B0-3042-Threadlight-RGB9-v0.2.0.bin",
+  "output_sha256": "cc5b1697491ec1b3b99500a8df554e284f473ac80b81d2f3ceee7b7786f4e21a",
+  "output_size": 74044,
+  "code_base": "0x12000",
+  "code_size": 316,
+  "state": [
+    "0x20002e68",
+    "0x20002e88"
+  ],
+  "changes": [
+    {
+      "name": "raw_hid_hook",
+      "offset": "0xb036",
+      "old": "fff788ff",
+      "new": "06f0e3ff"
+    },
+    {
+      "name": "rgb_submit_wrapper",
+      "offset": "0x10bf4",
+      "old": "5d230000",
+      "new": "d5200100"
+    },
+    {
+      "name": "bss_end",
+      "offset": "0x178",
+      "old": "682e0020",
+      "new": "882e0020"
+    },
+    {
+      "name": "heap_start",
+      "offset": "0xc24c",
+      "old": "682e0020",
+      "new": "882e0020"
+    }
+  ],
+  "hardware_validation": {
+    "date": "2026-08-10",
+    "normal_enumeration": true,
+    "typing": true,
+    "rgb9_capability": true,
+    "focus_blackout": true
+  }
+}

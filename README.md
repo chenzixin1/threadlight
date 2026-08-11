@@ -21,12 +21,12 @@
 
 # 中文
 
-Threadlight 是一个轻量的 macOS 菜单栏应用。它只读观察本机 Codex 任务事件，并把最需要你注意的状态显示成整块键盘的颜色和节奏。
+Threadlight 是一个轻量的 macOS 菜单栏应用。它只读观察本机 Codex 任务事件，并把状态显示在整块键盘或数字键 `1`–`9` 上。
 
 - **不打断工作：** 不弹通知也能从键盘灯光看见任务进度。
 - **不接管按键：** 没有数字键映射、全局快捷键或 Karabiner。
 - **不需要 Hook：** 无须修改 Codex 配置，也不需要 API Key 或“输入监控”权限。
-- **用完即恢复：** 空闲、暂停或退出时恢复键盘原有 RGB 灯效。
+- **用完即恢复：** 暂停或退出时恢复键盘原有 RGB 灯效。
 
 ## 界面
 
@@ -36,10 +36,19 @@ Threadlight 是一个轻量的 macOS 菜单栏应用。它只读观察本机 Cod
     <td width="38%"><img src="assets/screenshots/threadlight-menu-zh.png" alt="Threadlight 中文菜单栏菜单"></td>
   </tr>
   <tr>
-    <td align="center">配色、状态动画与亮度</td>
+    <td align="center">范围、配色、状态动画与亮度</td>
     <td align="center">菜单栏里的全部操作</td>
   </tr>
 </table>
+
+## 灯光范围
+
+| 范围 | 行为 | 固件要求 |
+| --- | --- | --- |
+| 整个键盘 | 汇总所有任务，显示最高优先级状态 | 原厂 QMK/VIA 固件 |
+| 数字键 `1`–`9` | 对应最近 9 个本地 Codex 主任务，并按侧栏置顶顺序优先排列；顺序变化时自动重排，后台 subagent 和旧的置顶记录不占编号，其他位置全部熄灭 | [Threadlight RGB9 v0.2.0+ 固件](firmware/README.md) |
+
+“灯光范围”决定状态显示在哪里；“配色方案”和“亮度”决定它如何显示。这三个设置彼此独立。数字键模式由固件在每一帧清空背景，让注意力只留在 `1`–`9`；退出该模式时自动恢复原灯效。
 
 ## 状态如何变成灯光
 
@@ -49,9 +58,10 @@ Threadlight 是一个轻量的 macOS 菜单栏应用。它只读观察本机 Cod
 | 刚刚完成 | 绿色呼吸两次，然后常亮至下一项任务开始 |
 | 等待输入或批准 | 橙色慢速呼吸 |
 | 任务失败 | 红色双闪后常亮；用户主动取消不算失败 |
-| 空闲、暂停或退出 | 恢复键盘原有灯效 |
+| 空闲 | 整板模式恢复原灯效；数字键模式显示白色 |
+| 暂停或退出 | 恢复键盘原有灯效 |
 
-多个任务同时存在时，整块键盘显示优先级最高的状态：
+在“整个键盘”范围中，多个任务同时存在时显示优先级最高的状态：
 
 ```text
 任务失败 > 等待操作 > 已完成提示 > 执行中 > 空闲
@@ -81,6 +91,12 @@ Threadlight 是一个轻量的 macOS 菜单栏应用。它只读观察本机 Cod
 
 Alice80 存在不同 PCB 与固件版本。旧版 EVision `320F:5055` 不支持；Alice75、Alice98 以及其他 QMK/VIA 键盘也不会自动兼容。请以 USB 身份为准，而不是只看商品名称。
 
+数字键 `1`–`9` 的逐键覆盖已在三模版 `36B0:3042`、原厂 `V0103` 基础上的 **[Threadlight RGB9](firmware/README.md)** 实验固件中通过实机验证。原厂固件仍可使用整板模式，但不会响应 RGB9 逐键命令。RGB9 v0.2.0 的聚焦清屏补丁也已完成实机刷写验证：它会在固件提交同一灯光帧时清空其他 59 颗 LED，再写入 1–9；切换范围、暂停或退出时会清除覆盖并恢复键盘原有灯效。
+
+### 刷入数字键固件
+
+需要数字键模式时，请按 **[RGB9 v0.2.0 完整刷写与原厂恢复教程](firmware/README.md)** 操作。教程包含 USB 型号核对、固件 SHA-256 校验、按住 `Esc` 进入 `03EB:2045` 恢复盘、写入 `FLASH.BIN`、成功判断和恢复原厂 `V0103` 的步骤。未确认正常设备为 `36B0:3042` 时不要刷写。
+
 参考：[FEKER Alice80 手册](https://fekertech.com/blogs/manual/feker-alice-80-manual)、[FEKER QMK/VIA 下载](https://fekertech.com/blogs/qmk-via)、[QMK USB endpoint 说明](https://docs.qmk.fm/config_options#usb-endpoint-limitations)、[VIA Raw HID 配置](https://www.caniusevia.com/docs/configuring_qmk/)。
 
 ### 必须使用有线连接
@@ -91,7 +107,7 @@ Alice80 存在不同 PCB 与固件版本。旧版 EVision `320F:5055` 不支持�
 | 2.4GHz 接收器 | 支持 | 未支持、未验证 |
 | Bluetooth | 支持 | 不支持 |
 
-即使 USB-C 已经插入，键盘处于无线模式时线缆也可能只负责充电。请把 Alice80 实体开关拨到 `OFF`，连接 USB-C，再按 `Fn + N` 进入有线模式。
+即使 USB-C 已经插入，键盘处于无线模式时线缆也可能只负责充电。`36B0:305F` 版请把实体开关拨到 `OFF`，连接 USB-C，再按 `Fn + N`；三模 `36B0:3042` 版请把开关拨到中间的有线档。
 
 ## Codex 设置
 
@@ -135,20 +151,22 @@ cd threadlight
 
 ## 使用
 
-1. 把 Alice80 实体开关拨到 `OFF`。
-2. 连接 USB-C，按 `Fn + N` 进入有线模式。
+1. 把 Alice80 切换到有线模式：`36B0:305F` 版拨到 `OFF`；三模 `36B0:3042` 版拨到中间档。
+2. 连接 USB-C；`36B0:305F` 版再按一次 `Fn + N`。
 3. 启动一个 Codex 任务。
 4. 点击菜单栏 Threadlight 图标。
-5. 选择配色、调整亮度，或在“测试灯光”中单独预览每种状态。
+5. 打开“灯光设置”，选择灯光范围、配色和亮度，或在“测试灯光”中预览每种状态。
 
 菜单还提供暂停、日志、开机启动、GitHub 主页和退出。
 
 ## 工作原理与隐私
 
-1. 只读打开 `~/.codex/state_5.sqlite`，发现未归档任务。
+1. 只读打开 `~/.codex/state_5.sqlite` 发现最近的未归档任务，并读取 `~/.codex/.codex-global-state.json` 中的侧栏置顶顺序。
 2. 只读监视对应 rollout JSONL，识别执行、完成、等待和错误事件。
-3. 通过 QMK/VIA 32 字节 Raw HID 设置整板 HSV，不写键盘 EEPROM。
+3. 整板模式通过 QMK/VIA 32 字节 Raw HID 设置 HSV；数字键模式通过 Threadlight RGB9 的 `0xB0` 覆盖协议，让固件在同一帧清空整板背景并写入 9 颗 LED。
 4. 菜单进程管理一个灯控子进程；没有快捷键观察器。
+
+两种输出都只修改运行时灯光状态，不写键盘 EEPROM。数字键模式不会修改键位，也不监听数字键输入。
 
 Threadlight 不发起网络请求，也不会上传 Codex 数据、任务标题或任务内容。
 
@@ -159,6 +177,8 @@ app='/Applications/Threadlight.app/Contents/MacOS/Threadlight'
 
 "$app" --task-lights on
 "$app" --task-lights off
+"$app" --scope whole-board
+"$app" --scope number-keys
 "$app" --scheme codex
 "$app" --scheme ocean
 "$app" --scheme violet
@@ -180,6 +200,7 @@ tail -f ~/Library/Logs/Threadlight.log
 - 确认 USB 身份是 `36B0:305F` 或 `36B0:3042`。
 - `36B0:305F` 版本确认实体开关为 `OFF`，并按过 `Fn + N`；三模 `36B0:3042` 版本将开关拨到中间的有线档。
 - 退出 VIA 或其他可能占用 Raw HID 的键盘软件。
+- 如果整板灯正常但数字键模式无响应，确认日志出现 `Threadlight RGB9 firmware detected`；否则应切回整板模式。
 - 先从菜单执行一次“测试灯光”。
 - 确认 Codex 已经运行过至少一个本地任务。
 
@@ -193,18 +214,27 @@ tail -f ~/Library/Logs/Threadlight.log
 
 # English
 
-Threadlight is a lightweight macOS menu bar app. It watches local Codex task events read-only and turns the most important state into whole-board keyboard color and motion.
+Threadlight is a lightweight macOS menu bar app. It watches local Codex task events read-only and shows status on either the whole keyboard or number keys `1`–`9`.
 
 - **Glanceable:** see whether a task is working, complete, waiting, or failed without another notification.
 - **No key takeover:** no number-key mapping, global shortcut, or Karabiner dependency.
 - **No Codex hook:** no Codex configuration change, API key, or Input Monitoring permission.
-- **Leaves no lighting residue:** idle, pause, and quit restore the keyboard's previous RGB effect.
+- **Leaves no lighting residue:** pause and quit restore the keyboard's previous RGB effect.
 
 ## Interface
 
 <p align="center">
   <img src="assets/screenshots/threadlight-settings-en.png" alt="Threadlight light settings in English" width="70%">
 </p>
+
+## Lighting scope
+
+| Scope | Behavior | Firmware requirement |
+| --- | --- | --- |
+| Whole Keyboard | Aggregates every task and shows the highest-priority status | Stock QMK/VIA firmware |
+| Number Keys `1`–`9` | Uses the nine most recent local primary Codex tasks and prioritizes the sidebar's manual pin order; slots update when the order changes, background subagents and stale pin records do not consume slots, and every other position stays dark | [Threadlight RGB9 v0.2.0+ firmware](firmware/README.md) |
+
+Lighting scope decides where status appears. Color scheme and brightness decide how it appears; all three settings are independent. In Number Keys scope the firmware clears the background on every frame so attention stays on `1`–`9`; leaving the scope restores the original effect automatically.
 
 ## Status behavior
 
@@ -214,9 +244,10 @@ Threadlight is a lightweight macOS menu bar app. It watches local Codex task eve
 | Just completed | Two green breaths, then solid until the next task starts |
 | Waiting for input or approval | Slow amber breathing |
 | Failed | Two red flashes, then solid; user interruption is not a failure |
-| Idle, paused, or quit | Restore the keyboard's previous RGB effect |
+| Idle | Restore the original effect in Whole Keyboard scope; show white in Number Keys scope |
+| Paused or quit | Restore the keyboard's previous RGB effect |
 
-When several tasks exist, Threadlight shows the highest-priority state:
+In Whole Keyboard scope, Threadlight shows the highest-priority state:
 
 ```text
 Failed > Waiting > Completion indication > Working > Idle
@@ -245,6 +276,12 @@ Only these USB-tested Alice80 revisions are currently supported:
 | Manufacturer observed on macOS | `RDMCTMZT` |
 
 Multiple Alice80 PCB and firmware revisions exist. The old EVision `320F:5055` revision is unsupported. Alice75, Alice98, and other QMK/VIA boards are not automatically compatible; USB identity, not the product label alone, determines support.
+
+The per-key Number Keys `1`–`9` overlay is hardware-verified on tri-mode `36B0:3042` with experimental **[Threadlight RGB9](firmware/README.md)** firmware based on stock `V0103`. Stock firmware continues to support Whole Keyboard scope but does not respond to RGB9 per-key commands. The RGB9 v0.2.0 focus-blackout patch has also passed on-device flashing and visual validation: it clears the other 59 LEDs and writes keys 1–9 in the same firmware frame; changing scope, pausing, or quitting clears the overlay and restores the keyboard's original effect.
+
+### Flash the Number Keys firmware
+
+Follow the **[complete RGB9 v0.2.0 flashing and stock-recovery guide](firmware/README.md)** for USB identity checks, SHA-256 verification, the `Esc` bootloader sequence, writing `FLASH.BIN`, success checks, and restoring stock `V0103`. Do not flash unless the normal wired device is confirmed as `36B0:3042`.
 
 References: [FEKER Alice80 manual](https://fekertech.com/blogs/manual/feker-alice-80-manual), [FEKER QMK/VIA downloads](https://fekertech.com/blogs/qmk-via), [QMK USB endpoint limitations](https://docs.qmk.fm/config_options#usb-endpoint-limitations), and [VIA Raw HID configuration](https://www.caniusevia.com/docs/configuring_qmk/).
 
@@ -294,20 +331,22 @@ You can also double-click `install-service.command` in Finder. It builds and ad-
 
 ## Use
 
-1. Move the Alice80 hardware switch to `OFF`.
-2. Connect USB-C and press `Fn + N` for wired mode.
+1. Select wired mode: move `36B0:305F` to `OFF`, or tri-mode `36B0:3042` to its middle position.
+2. Connect USB-C; on `36B0:305F`, press `Fn + N` once.
 3. Start a Codex task.
 4. Click the Threadlight menu bar icon.
-5. Pick a scheme, adjust brightness, or preview a state under **Test Lights**.
+5. Open **Light Settings** to pick a lighting scope, scheme, and brightness, or preview a state under **Test Lights**.
 
 The menu also provides pause, logs, launch at login, the GitHub project, and Quit.
 
 ## How it works and privacy
 
-1. Opens `~/.codex/state_5.sqlite` read-only to discover unarchived tasks.
+1. Opens `~/.codex/state_5.sqlite` read-only to discover recent unarchived tasks, and reads the sidebar pin order from `~/.codex/.codex-global-state.json`.
 2. Watches the corresponding rollout JSONL files read-only for working, complete, waiting, and error events.
-3. Sends whole-board HSV through 32-byte QMK/VIA Raw HID reports without writing keyboard EEPROM.
+3. Whole Keyboard scope sends HSV through 32-byte QMK/VIA Raw HID reports; Number Keys scope uses Threadlight RGB9 command `0xB0` so the firmware clears the board background and writes nine volatile LED colors in the same frame.
 4. Runs one menu process and one lighting child process; there is no shortcut observer.
+
+Neither output writes keyboard EEPROM. Number Keys scope does not remap keys or monitor number-key input.
 
 Threadlight makes no network requests and does not upload Codex data, task titles, or task content.
 
@@ -318,6 +357,8 @@ app='/Applications/Threadlight.app/Contents/MacOS/Threadlight'
 
 "$app" --task-lights on
 "$app" --task-lights off
+"$app" --scope whole-board
+"$app" --scope number-keys
 "$app" --scheme codex
 "$app" --scheme ocean
 "$app" --scheme violet
@@ -339,6 +380,7 @@ If the lights do not change:
 - Confirm USB VID:PID `36B0:305F` or `36B0:3042`.
 - For `36B0:305F`, move the hardware switch to `OFF` and press `Fn + N`; for tri-mode `36B0:3042`, move the switch to its middle wired position.
 - Quit VIA or another keyboard utility that may hold Raw HID exclusively.
+- If Whole Keyboard works but Number Keys does not, look for `Threadlight RGB9 firmware detected` in the log; otherwise switch back to Whole Keyboard.
 - Run a light test from the menu.
 - Confirm Codex has completed at least one local task.
 

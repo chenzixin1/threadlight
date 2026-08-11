@@ -41,6 +41,6 @@ open -g "$app_path"
 echo
 echo "Installed Threadlight. FEKER QMK/VIA lighting runs without a privileged helper."
 echo "Right-click the menu bar icon, open Settings, and enable Start at Login."
-echo "Use the keyboard icon in the menu bar to test a whole-board color."
+echo "Open Light Settings from the keyboard icon to choose Whole Keyboard or Number Keys 1–9."
 echo
 read "?Press Return to close…"

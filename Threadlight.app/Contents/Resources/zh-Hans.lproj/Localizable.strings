@@ -1,6 +1,10 @@
 "app.menu_title" = "Threadlight";
 "task_lights.on" = "任务灯已开启";
 "task_lights.off" = "任务灯已暂停";
+"scope.title" = "灯光范围";
+"scope.whole_board.short" = "整个键盘";
+"scope.number_keys.short" = "数字键 1–9";
+"scope.rgb9_note" = "提示：数字键 1–9 仅适用于已刷入 Threadlight RGB9 v0.2+ 固件的三模 Alice80。";
 "scheme.title" = "配色方案";
 "scheme.codex" = "Codex 默认";
 "scheme.ocean" = "海洋 Ocean";
@@ -18,6 +22,8 @@
 "help.title" = "使用说明";
 "help.open_menu" = "点击图标：打开菜单";
 "help.toggle" = "菜单第一项：开启或暂停任务灯";
+"help.scope_board" = "整个键盘 — 显示最高优先级任务";
+"help.scope_keys" = "数字键 1–9 — 每键一个任务，其他键熄灭";
 "help.working" = "执行中 — 工作色呼吸";
 "help.complete" = "任务完成 — 呼吸两次后常亮";
 "help.waiting" = "等待操作 — 需要输入或批准";
